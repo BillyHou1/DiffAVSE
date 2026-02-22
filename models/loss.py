@@ -120,18 +120,9 @@ def si_sdr_loss(reference, estimation):
     Returns:
         scalar tensor (negative SI-SDR, averaged over batch)
     """
-    eps = 1e-8
-
-    reference = reference - reference.mean(dim=-1, keepdim=True)
-    estimation = estimation - estimation.mean(dim=-1, keepdim=True)
-
-    ref_energy = torch.sum(reference ** 2, dim=-1, keepdim=True)
-    projection = (torch.sum(estimation * reference, dim=-1, keepdim=True) * reference) / (ref_energy + eps)
-    noise = estimation - projection
-
-    ratio = torch.sum(projection ** 2, dim=-1) / (torch.sum(noise ** 2, dim=-1) + eps)
-    si_sdr = 10 * torch.log10(ratio + eps)
-    return -si_sdr.mean()
+    # TODO look up SI-SDR formula, return negative mean so optimizer can minimize
+    # keep it in torch, add eps for log
+    raise NotImplementedError
 
 
 def si_sdr_score(utts_r, utts_g):
@@ -145,11 +136,8 @@ def si_sdr_score(utts_r, utts_g):
     Returns:
         float
     """
-    scores = []
-    for r, g in zip(utts_r, utts_g):
-        score = -si_sdr_loss(r.unsqueeze(0), g.unsqueeze(0))
-        scores.append(score.item())
-    return sum(scores)/len(scores)
+    # TODO
+    raise NotImplementedError
 
 
 # Shunjie --------------------------------------------------------------
@@ -165,5 +153,35 @@ def stoi_score(utts_r, utts_g, cfg):
     Returns:
         float
     """
-    # TODO
-    raise NotImplementedError
+    from pystoi import stoi
+    
+    def eval_stoi(clean_utt, esti_utt, sr):
+        """
+        Evaluate STOI score for a single pair of clean and estimated utterances.
+
+        Args:
+            clean_utt (np.ndarray): Clean reference utterance.
+            esti_utt (np.ndarray): Estimated generated utterance.
+            sr (int): Sampling rate.
+
+        Returns:
+            float: STOI score or -1 in case of an error.
+        """
+        try:
+            stoi_score = stoi(clean_utt, esti_utt, sr, extended=False)
+        except Exception as e:
+            # Error can happen due to silent period or other issues
+            print(f"Error computing STOI score: {e}")
+            stoi_score = -1
+        return stoi_score
+
+    # Parallel processing of STOI score computation
+    stoi_scores = Parallel(n_jobs=30)(delayed(eval_stoi)(
+        utts_r[i].squeeze().cpu().numpy(),
+        utts_g[i].squeeze().cpu().numpy(),
+        cfg['stft_cfg']['sampling_rate']
+    ) for i in range(len(utts_r)))
+
+    # Calculate mean STOI score
+    mean_stoi = np.mean(stoi_scores)
+    return mean_stoi
