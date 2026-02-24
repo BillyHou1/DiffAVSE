@@ -120,9 +120,18 @@ def si_sdr_loss(reference, estimation):
     Returns:
         scalar tensor (negative SI-SDR, averaged over batch)
     """
-    # TODO look up SI-SDR formula, return negative mean so optimizer can minimize
-    # keep it in torch, add eps for log
-    raise NotImplementedError
+    eps = 1e-8
+
+    reference = reference - reference.mean(dim=-1, keepdim=True)
+    estimation = estimation - estimation.mean(dim=-1, keepdim=True)
+
+    ref_energy = torch.sum(reference ** 2, dim=-1, keepdim=True)
+    projection = (torch.sum(estimation * reference, dim=-1, keepdim=True) * reference) / (ref_energy + eps)
+    noise = estimation - projection
+
+    ratio = torch.sum(projection ** 2, dim=-1) / (torch.sum(noise ** 2, dim=-1) + eps)
+    si_sdr = 10 * torch.log10(ratio + eps)
+    return -si_sdr.mean()
 
 
 def si_sdr_score(utts_r, utts_g):
@@ -136,8 +145,12 @@ def si_sdr_score(utts_r, utts_g):
     Returns:
         float
     """
-    # TODO
-    raise NotImplementedError
+    scores = []
+    for r, g in zip(utts_r, utts_g):
+        score = -si_sdr_loss(r.unsqueeze(0), g.unsqueeze(0))
+        scores.append(score.item())
+    scores_array = np.array(scores)
+    return scores_array.mean()
 
 
 # Shunjie --------------------------------------------------------------
