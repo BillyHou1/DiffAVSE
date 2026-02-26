@@ -1,13 +1,10 @@
-# Fan
-# Scan noise directories for audio files, merge into one pool,
-# split train/valid (~5% held out), save as JSON lists.
-# Output: data/noise_train.json, data/noise_valid.json
-# Each is a flat list of absolute paths.
+# Author: Fan
+# Scan noise directories, merge into one pool, split train/valid (~5% held out).
 
 import os
-import json
 import random
 import argparse
+from utils import save_json
 
 
 def scan_noise_dirs(noise_dirs, extensions=('.wav', '.flac')):
@@ -20,8 +17,17 @@ def scan_noise_dirs(noise_dirs, extensions=('.wav', '.flac')):
     Returns:
         list of absolute file paths
     """
-    # TODO
-    raise NotImplementedError
+    out = []
+    for noise_dir in noise_dirs:
+        noise_dir = os.path.abspath(noise_dir)
+        if not os.path.isdir(noise_dir):
+            continue
+        for root, dirs, files in os.walk(noise_dir):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in extensions:
+                    full = os.path.abspath(os.path.join(root, file))
+                    out.append(full)
+    return out
 
 
 def split_noise(file_list, val_ratio=0.05, seed=1234):
@@ -35,14 +41,14 @@ def split_noise(file_list, val_ratio=0.05, seed=1234):
     Returns:
         (train_list, valid_list)
     """
-    # TODO
-    raise NotImplementedError
+    random.seed(seed)
+    random.shuffle(file_list)
+    n = len(file_list)
+    n_val = max(1, int(n * val_ratio))
+    valid_list = file_list[:n_val]
+    train_list = file_list[n_val:]
+    return train_list, valid_list
 
-
-def save_json(data, path):
-    """Save a list to a JSON file."""
-    # TODO
-    raise NotImplementedError
 
 
 def main():
@@ -52,9 +58,14 @@ def main():
     parser.add_argument('--output_dir', default='data', help='output directory for JSON files')
     args = parser.parse_args()
 
-    # TODO scan, split, save, print counts
-    raise NotImplementedError
-
+    noise_dirs = args.noise_dirs
+    file_list = scan_noise_dirs(noise_dirs)
+    train_list, valid_list = split_noise(file_list)
+    out_dir = os.path.abspath(args.output_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    save_json(train_list, os.path.join(out_dir, "noise_train.json"))
+    save_json(valid_list, os.path.join(out_dir, "noise_valid.json"))
+    print("train:", len(train_list), "valid:", len(valid_list))
 
 if __name__ == '__main__':
     main()
