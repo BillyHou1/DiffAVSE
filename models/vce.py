@@ -1,39 +1,55 @@
-# Billy
-# VCE scores each video frame's reliability, outputs alpha in [0,1]. High means
-# the face is clear and useful, low means blocked or blurry.
+#Author: Billy
+#Visual Confidence Estimator, scores each frame's reliability as alpha in [0,1].
 
 import torch
 import torch.nn as nn
 
-# TODO VCE and VCEWithTemporalSmoothing
-# VCE is a small net that scores each video frame's reliability.
-# Takes [B, T, 512] from the visual encoder, returns [B, T, 1] in [0,1].
-# Each frame is independent so T acts like an extra batch dim.
-# Architecture is up to you, just keep the I/O shape.
-# VCEWithTemporalSmoothing adds causal smoothing on top of VCE
-# so alpha doesn't jump around frame to frame.
-# Causal means only current + past frames, no future. We need that for streaming.
-# Smoothing method is your call.
-
 
 class VCE(nn.Module):
-    def __init__(self, in_dim=512):
-        super().__init__()
-        # TODO 512 -> scalar in [0,1], each frame independently
-        raise NotImplementedError
+    """[B, T, D] -> [B, T, 1], per-frame confidence score."""
 
-    def forward(self, x):
-        """x: [B, T, 512] -> [B, T, 1] in [0, 1]"""
-        raise NotImplementedError
+    def __init__(self, input_dim=512, hidden_dims=None):
+        super().__init__()
+        if hidden_dims is None:
+            hidden_dims = [256, 64]
+
+        layers = []
+        dims = [input_dim] + hidden_dims
+        for i in range(len(dims) - 1):
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.ReLU())
+
+        layers.append(nn.Linear(dims[-1], 1))
+        layers.append(nn.Sigmoid())
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, visual_feat):
+        return self.net(visual_feat)
 
 
 class VCEWithTemporalSmoothing(VCE):
-    def __init__(self, in_dim=512, smooth_kernel=5):
-        super().__init__(in_dim)
-        # TODO causal smoothing, only look at current + past frames
-        # make sure output stays in [0,1] after smoothing
-        raise NotImplementedError
+    """VCE + causal Conv1d smoothing to reduce frame-to-frame jitter."""
 
-    def forward(self, x):
-        """x: [B, T, 512] -> [B, T, 1] in [0, 1], temporally smoothed"""
-        raise NotImplementedError
+    def __init__(self, input_dim=512, hidden_dims=None, smooth_kernel=5):
+        super().__init__(input_dim, hidden_dims)
+
+        self.smooth_kernel = smooth_kernel
+        self.smoother = nn.Conv1d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=smooth_kernel,
+            padding=0,
+            bias=False,
+        )
+        nn.init.constant_(self.smoother.weight, 1.0 / smooth_kernel)
+
+    def forward(self, visual_feat):
+        alpha = super().forward(visual_feat)  #[B, T, 1]
+
+        alpha = alpha.permute(0, 2, 1)  #[B, 1, T]
+        alpha = torch.nn.functional.pad(alpha, (self.smooth_kernel - 1, 0))  #causal left-pad
+        alpha = self.smoother(alpha)
+        alpha = alpha.permute(0, 2, 1)  #[B, T, 1]
+        alpha = torch.clamp(alpha, 0.0, 1.0)
+        return alpha
