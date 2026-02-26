@@ -64,19 +64,23 @@ class LiteVisualEncoderA(nn.Module):
         for param in self.features.parameters():
             param.requires_grad = True
     
-    def train(self, mode: bool = True):
-         """Override train()/eval() switch:If the features backbone is frozen, force features.eval() to prevent BatchNorm running stats drifting during training."""
-        super().train(mode)
+     def train(self, mode: bool = True):
+         """
+         Override train()/eval() switch:
+         If the features backbone is frozen, force features.eval() to prevent BatchNorm 
+         running stats drifting during training.
+         """
+         super().train(mode)
 
-    # If features are frozen (requires_grad=False), keep them in eval mode
-    # so BN uses running stats instead of updating with batch stats.
+         # If features are frozen (requires_grad=False), keep them in eval mode
+         # so BN uses running stats instead of updating with batch stats.
          if hasattr(self, "features"):
              for param in self.features.parameters():
                  if not param.requires_grad:
                      self.features.eval()
                      break
 
-        return self
+         return self
         
      def forward(self, video, T_audio):
         """
@@ -84,7 +88,7 @@ class LiteVisualEncoderA(nn.Module):
             video:   [B, 3, Tv, 96, 96]
             T_audio: int, target temporal length (= number of STFT frames)
         Returns:
-            [B, 512, T_audio]
+         [B, 512, T_audio]
         """
           B, C, T_v, H, W = video.shape
         
@@ -229,7 +233,7 @@ if __name__ == "__main__":
     # Test inputs
     batch_size = 2
     T_video = 75  # 3s video, 25fps
-    T_audio = 480  # 3s video，160fps
+    T_audio = 480  # 3s video, 160fps
     
     # Create encoder A
     encoder_a = LiteVisualEncoderA(cfg)
@@ -240,8 +244,8 @@ if __name__ == "__main__":
     # forward propagation
     visual_raw = encoder_a(video_input, T_audio)
     
-    print(f"EncoderA enter shape: {video_input.shape}")
-    print(f"EncoderA enter shape: {visual_raw.shape}")
+    print(f"EncoderA input shape: {video_input.shape}")
+    print(f"EncoderA input shape: {visual_raw.shape}")
     
     # Check parameter freezing
     print("\nEncoderA parameter freeze check:")
@@ -285,6 +289,6 @@ if __name__ == "__main__":
     
     # Check if the number of parameters is less than 1M
     if total_params_b < 1_000_000:
-        print(f"[OK] EncoderB parameter count {total_params_b:,} < 1M，meets lightweight requirements")
+        print(f"[OK] EncoderB parameter count {total_params_b:,} < 1M, meets lightweight requirements")
     else:
-        print(f"[FAIL] EncoderB parameter count {total_params_b:,} > 1M，Further optimization is needed")
+        print(f"[FAIL] EncoderB parameter count {total_params_b:,} > 1M, Further optimization is needed")
