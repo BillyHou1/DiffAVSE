@@ -1,8 +1,5 @@
-# Fan
-# Scan noise directories for audio files, merge into one pool,
-# split train/valid (~5% held out), save as JSON lists.
-# Output: data/noise_train.json, data/noise_valid.json
-# Each is a flat list of absolute paths.
+# Author: Fan
+# Scan noise directories, merge into one pool, split train/valid (~5% held out).
 
 import os
 import random

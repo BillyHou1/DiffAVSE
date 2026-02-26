@@ -1,8 +1,5 @@
-# Fan
-# LRS2: use official train.txt, val.txt, test.txt to build json lists.
-# each line in txt is relative path to one .mp4 (audio inside mp4).
-# output: lrs_train.json, lrs_valid.json, lrs_test.json
-# format: [{"video": "abs_path"}, ...]
+# Author: Fan
+# Build JSON lists for LRS2 using official train/val/test splits.
 
 import os
 import argparse

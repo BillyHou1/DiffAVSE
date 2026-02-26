@@ -1,7 +1,5 @@
-# Fan
-# VoxCeleb2: dev set for train, test set as-is. hold out ~2-3% of dev for valid.
-# format same as LRS2: [{"video": "abs_path"}, ...]
-# output: vox_train.json, vox_valid.json, vox_test.json
+# Author: Fan
+# Build JSON lists for VoxCeleb2. Dev split into train/valid, test as-is.
 
 import os
 import random

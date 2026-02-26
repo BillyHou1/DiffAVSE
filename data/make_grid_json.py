@@ -1,9 +1,6 @@
-# Fan
-# GRID: 34 speakers s1-s34, each has audio/*.wav and video/*.mpg
-# pair by same filename (e.g. xxx.wav and xxx.mpg)
-# split: s1-s28 train, s29-s31 valid, s32-s34 test
-# output: grid_train.json, grid_valid.json, grid_test.json
-# format: [{"audio": "path", "video": "path"}, ...]
+# Author: Fan
+# Build JSON lists for GRID corpus. Pairs audio/*.wav with video/*.mpg per speaker.
+# Split: s1-s28 train, s29-s31 valid, s32-s34 test.
 
 import os
 import argparse
