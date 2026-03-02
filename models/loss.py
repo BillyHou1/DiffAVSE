@@ -1,9 +1,9 @@
-# Ronny + Shunjie
-# TODO:
-# 1. si_sdr_loss(ref, est): negative SI-SDR for training
-# 2. si_sdr_score(utts_r, utts_g): mean SI-SDR in dB for eval
-# 3. stoi_score(utts_r, utts_g, cfg): mean STOI [0,1] for eval
-
+# Ronny and Shunjie works
+# phase_losses and pesq_score are done. Need 3 more functions at the end.
+# Ronny: si_sdr_loss for training (returns negative so optimizer minimizes it)
+# and si_sdr_score for eval (same idea as pesq_score but no cfg needed).
+# Look up SI-SDR (Le Roux et al. 2019).
+# Shunjie: stoi_score using pystoi, same pattern as pesq_score.
 # Reference: https://github.com/yxlu-0102/MP-SENet/blob/main/models/generator.py
 
 import torch
@@ -20,7 +20,7 @@ def phase_losses(phase_r, phase_g, cfg):
     Args:
         phase_r (torch.Tensor): Reference phase tensor of shape (batch, freq, time).
         phase_g (torch.Tensor): Generated phase tensor of shape (batch, freq, time).
-        h (object): Configuration object containing parameters like n_fft.
+        cfg (dict): Config dict with stft_cfg.n_fft etc.
 
     Returns:
         tuple: Tuple containing in-phase loss, gradient delay loss, and integrated absolute frequency loss.
@@ -65,47 +65,6 @@ def anti_wrapping_function(x):
     """
     return torch.abs(x - torch.round(x / (2 * np.pi)) * 2 * np.pi)
 
-def compute_stft(y: torch.Tensor, n_fft: int, hop_size: int, win_size: int, center: bool, compress_factor: float = 1.0) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Compute the Short-Time Fourier Transform (STFT) and return magnitude, phase, and complex components.
-
-    Args:
-        y (torch.Tensor): Input signal tensor.
-        n_fft (int): Number of FFT points.
-        hop_size (int): Hop size for STFT.
-        win_size (int): Window size for STFT.
-        center (bool): Whether to pad the input on both sides.
-        compress_factor (float, optional): Compression factor for magnitude. Defaults to 1.0.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Magnitude, phase, and complex components.
-    """
-    eps = torch.finfo(y.dtype).eps
-    hann_window = torch.hann_window(win_size).to(y.device)
-
-    stft_spec = torch.stft(
-        y,
-        n_fft=n_fft,
-        hop_length=hop_size,
-        win_length=win_size,
-        window=hann_window,
-        center=center,
-        pad_mode='reflect',
-        normalized=False,
-        return_complex=True
-    )
-
-    real_part = stft_spec.real
-    imag_part = stft_spec.imag
-
-    mag = torch.sqrt( real_part.pow(2) + imag_part.pow(2) + eps )
-    pha = torch.atan2( real_part + eps, imag_part + eps )
-
-    mag = torch.pow(mag, compress_factor)
-    com = torch.stack((mag * torch.cos(pha), mag * torch.sin(pha)), dim=-1)
-
-    return mag, pha, com
-
 def pesq_score(utts_r, utts_g, cfg):
     """
     Calculate PESQ (Perceptual Evaluation of Speech Quality) score for pairs of reference and generated utterances.
@@ -113,7 +72,7 @@ def pesq_score(utts_r, utts_g, cfg):
     Args:
         utts_r (list of torch.Tensor): List of reference utterances.
         utts_g (list of torch.Tensor): List of generated utterances.
-        h (object): Configuration object containing parameters like sampling_rate.
+        cfg (dict): Config dict with stft_cfg.sampling_rate.
 
     Returns:
         float: Mean PESQ score across all pairs of utterances.
@@ -148,3 +107,94 @@ def pesq_score(utts_r, utts_g, cfg):
     # Calculate mean PESQ score
     pesq_score = np.mean(pesq_scores)
     return pesq_score
+
+
+# Ronny ---------------------------------------------------------------
+def si_sdr_loss(reference, estimation):
+    """
+    Training loss: returns NEGATIVE SI-SDR so optimizer minimizes it.
+
+    Args:
+        reference:  [B, T] clean waveform
+        estimation: [B, T] enhanced waveform
+    Returns:
+        scalar tensor (negative SI-SDR, averaged over batch)
+    """
+    eps = 1e-8
+
+    reference = reference - reference.mean(dim=-1, keepdim=True)
+    estimation = estimation - estimation.mean(dim=-1, keepdim=True)
+
+    ref_energy = torch.sum(reference ** 2, dim=-1, keepdim=True)
+    projection = (torch.sum(estimation * reference, dim=-1, keepdim=True) * reference) / (ref_energy + eps)
+    noise = estimation - projection
+
+    ratio = torch.sum(projection ** 2, dim=-1) / (torch.sum(noise ** 2, dim=-1) + eps)
+    si_sdr = 10 * torch.log10(ratio + eps)
+    return -si_sdr.mean()
+
+
+def si_sdr_score(utts_r, utts_g):
+    """
+    Evaluation metric: mean SI-SDR in dB.
+    Same structure as pesq_score but does not need cfg (no sample rate required).
+
+    Args:
+        utts_r: list of tensors, reference utterances
+        utts_g: list of tensors, enhanced utterances
+    Returns:
+        float
+    """
+    scores = []
+    for r, g in zip(utts_r, utts_g):
+        score = -si_sdr_loss(r.unsqueeze(0), g.unsqueeze(0))
+        scores.append(score.item())
+    scores_array = np.array(scores)
+    return scores_array.mean()
+
+
+# Shunjie --------------------------------------------------------------
+def stoi_score(utts_r, utts_g, cfg):
+    """
+    STOI evaluation metric using pystoi (pip install pystoi).
+    Same structure as pesq_score: parallel, handle exceptions, return mean.
+
+    Args:
+        utts_r: list of tensors
+        utts_g: list of tensors
+        cfg:    config dict (need cfg['stft_cfg']['sampling_rate'])
+    Returns:
+        float
+    """
+    from pystoi import stoi
+    
+    def eval_stoi(clean_utt, esti_utt, sr):
+        """
+        Evaluate STOI score for a single pair of clean and estimated utterances.
+
+        Args:
+            clean_utt (np.ndarray): Clean reference utterance.
+            esti_utt (np.ndarray): Estimated generated utterance.
+            sr (int): Sampling rate.
+
+        Returns:
+            float: STOI score or -1 in case of an error.
+        """
+        try:
+            stoi_score = stoi(clean_utt, esti_utt, sr, extended=False)
+        except Exception as e:
+            # Error can happen due to silent period or other issues
+            print(f"Error computing STOI score: {e}")
+            stoi_score = -1
+        return stoi_score
+
+    # Parallel processing of STOI score computation
+    stoi_scores = Parallel(n_jobs=30)(delayed(eval_stoi)(
+        utts_r[i].squeeze().cpu().numpy(),
+        utts_g[i].squeeze().cpu().numpy(),
+        cfg['stft_cfg']['sampling_rate']
+    ) for i in range(len(utts_r)))
+
+    # Calculate mean STOI score
+    mean_stoi = np.mean(stoi_scores)
+    return mean_stoi

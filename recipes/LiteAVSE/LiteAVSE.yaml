@@ -38,9 +38,9 @@ training_cfg:
     magnitude: 0.9
     phase: 0.3
     complex: 0.1
-    time: 0.2
+    time: 0.0
     consistancy: 0.1
-    si_sdr: 0.2
+    si_sdr: 0.3
   use_PCS400: False
 
 # STFT Configuration

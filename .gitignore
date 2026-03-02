@@ -15,8 +15,9 @@ mamba_install/
 dist/
 build/
 
-# data & models (too big)
-data/
+# data & models (too big) — keep .py scripts, ignore json/wav etc
+data/*
+!data/*.py
 *.wav
 *.mp4
 *.flac

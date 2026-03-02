@@ -1,22 +1,17 @@
 # Billy
-# TODO:
-# add LiteAVSEMamba class: double-gated AV fusion (alpha * gate * visual_feat)
-# VisualEncoder + VCE + FSVG + CausalTFMamba + Decoders
-#
-# module interfaces:
-#   DenseEncoder:   noisy [B,2,T,F] -> audio_feat [B,64,T,F_enc]
-#   VisualEncoder:  video [B,1,T,96,96] -> visual_feat [B,64,T]
-#   VCE:            visual_feat [B,64,T] -> alpha [B,1,T]
-#   FSVG:          audio_feat + visual_feat -> gate [B,1,T,F_enc]
-#   CausalTFMamba:  [B,64,T,F_enc] -> [B,64,T,F_enc]
-#   MagDecoder:     [B,64,T,F_enc] -> mag_mask [B,1,T,F]
-#   PhaseDecoder:   [B,64,T,F_enc] -> phase [B,1,T,F]
+# SEMamba below is the original audio-only model, already done.
+# LiteAVSEMamba is added at the bottom of this file.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
-from .mamba_block import TFMambaBlock
+from .mamba_block import TFMambaBlock, CausalTFMambaBlock
 from .codec_module import DenseEncoder, MagDecoder, PhaseDecoder
+from .codec_module import LiteDenseEncoder, LiteMagDecoder, LitePhaseDecoder
+from .vce import VCE   # swap with VCEWithTemporalSmoothing if you want smoothing
+from .fsvg import FSVG  # swap with FSVGWithPrior if you want the freq prior
+from .lite_visual_encoder import LiteVisualEncoderA, LiteVisualEncoderB
 
 class SEMamba(nn.Module):
     """
@@ -84,3 +79,35 @@ class SEMamba(nn.Module):
         )
 
         return denoised_mag, denoised_pha, denoised_com
+
+
+# TODO LiteAVSEMamba
+# AV version of SEMamba. Fusion happens after DenseEncoder in feature space,
+# so input_channel stays 2 (mag+pha), same as SEMamba.
+# Visual gets modulated by alpha from VCE and gate from FSVG,
+# then added to audio features as a residual.
+# Uses CausalTFMambaBlock instead of TFMambaBlock.
+# When video=None just skip the visual branch entirely.
+# cfg['visual_cfg']['use_visual'] turns the visual branch on/off
+# cfg['lite_cfg']['visual_encoder_type'] picks EncoderA or EncoderB
+# cfg['lite_cfg']['n_freq_enc'] is the freq dim after DenseEncoder
+class LiteAVSEMamba(nn.Module):
+    def __init__(self, cfg):
+        super(LiteAVSEMamba, self).__init__()
+        self.cfg = cfg
+        # TODO audio backbone (refer to SEMamba above for the pattern)
+        # TODO visual branch: visual encoder, VCE, FSVG, and projection layers
+        raise NotImplementedError
+    def forward(self, noisy_mag, noisy_pha, video=None):
+        """
+        Args:
+            noisy_mag: [B, F, T]
+            noisy_pha: [B, F, T]
+            video:     [B, 3, Tv, 96, 96] or None for audio-only fallback
+        Returns:
+            denoised_mag, denoised_pha, denoised_com  (same shapes as SEMamba)
+
+        Flow: encode audio → fuse visual if available → CausalTFMamba → decode.
+        Handle the case where video is None (audio-only fallback).
+        """
+        raise NotImplementedError
