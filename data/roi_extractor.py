@@ -7,7 +7,7 @@ import os
 
 class ROIsExtractor:
     """
-    提取 Mouth ROI 和 Full-Face ROI，生成 96x96 和 88x88 输出
+    Extract Mouth ROI and Full-Face ROI, generating 96x96 and 88x88 outputs
     """
     
     def __init__(self, static_image_mode=False, max_num_faces=1, min_detection_confidence=0.5):
@@ -19,20 +19,20 @@ class ROIsExtractor:
             min_tracking_confidence=0.5
         )
         
-        # 使用 FaceMesh 官方嘴唇集合（边的集合，提取所有端点）
+        # Use the official FaceMesh lip set (set of edges, extract all endpoints)
         lip_indices = set()
         for edge in self.mp_face_mesh.FACEMESH_LIPS:
             lip_indices.add(edge[0])
             lip_indices.add(edge[1])
         self.mouth_indices = sorted(list(lip_indices))
         
-        # 平滑滤波器状态
+        # Smoothing filter state
         self.smoothed_mouth_bbox = None
         self.smoothed_face_bbox = None
-        self.alpha = 0.3  # 平滑系数
+        self.alpha = 0.3  # Smoothing coefficient
         
     def _get_face_bbox(self, landmarks, img_w, img_h):
-        """从 landmarks 计算完整人脸边界框"""
+        """Compute the full-face bounding box from landmarks"""
         x_coords = []
         y_coords = []
         for landmark in landmarks.landmark:
@@ -42,20 +42,20 @@ class ROIsExtractor:
         x_min, x_max = min(x_coords), max(x_coords)
         y_min, y_max = min(y_coords), max(y_coords)
         
-        # 扩展 bbox 到正方形，并添加 margin
+        # Expand bbox to a square and add margin
         w = x_max - x_min
         h = y_max - y_min
         
-        # 使用较大的边作为正方形边长
+        # Use the larger side as the square size
         size = max(w, h)
-        # 扩大 1.2 倍，确保包含完整人脸
+        # Expand by 1.2x to ensure the full face is included
         size = int(size * 1.2)
         
-        # 计算中心点
+        # Compute center point
         cx = (x_min + x_max) / 2
         cy = (y_min + y_max) / 2
         
-        # 计算正方形边界
+        # Compute square boundaries
         x_min = int(cx - size / 2)
         y_min = int(cy - size / 2)
         x_max = int(cx + size / 2)
@@ -64,7 +64,7 @@ class ROIsExtractor:
         return (x_min, y_min, x_max, y_max)
     
     def _get_mouth_bbox(self, landmarks, img_w, img_h):
-        """从 landmarks 计算嘴部边界框（使用官方嘴唇索引）"""
+        """Compute the mouth bounding box from landmarks (using official lip indices)"""
         mouth_points = []
         for idx in self.mouth_indices:
             landmark = landmarks.landmark[idx]
@@ -75,25 +75,25 @@ class ROIsExtractor:
         x_min, y_min = mouth_points.min(axis=0)
         x_max, y_max = mouth_points.max(axis=0)
         
-        # 计算 tight bbox
+        # Compute tight bbox
         w = x_max - x_min
         h = y_max - y_min
         
-        # 扩大 1.6 倍（常用比例）
+        # Expand by 1.6x (common ratio)
         scale = 1.6
         w_expanded = w * scale
         h_expanded = h * scale
         
-        # 或者使用 margin 方式
+        # Or use margin-based expansion
         # margin = 0.2 * max(w, h)
         # w_expanded = w + 2 * margin
         # h_expanded = h + 2 * margin
         
-        # 计算中心点
+        # Compute center point
         cx = (x_min + x_max) / 2
         cy = (y_min + y_max) / 2
         
-        # 计算正方形边界（取较大边）
+        # Compute square boundaries (use the larger side)
         size = max(w_expanded, h_expanded)
         
         x_min = int(cx - size / 2)
@@ -104,21 +104,21 @@ class ROIsExtractor:
         return (x_min, y_min, x_max, y_max)
     
     def _smooth_bbox(self, bbox, bbox_type='mouth'):
-        """使用指数移动平均平滑边界框"""
+        """Smooth the bounding box using exponential moving average"""
         if bbox_type == 'mouth':
             smoothed_bbox = self.smoothed_mouth_bbox
         else:
             smoothed_bbox = self.smoothed_face_bbox
         
         if smoothed_bbox is None:
-            # 首次检测，直接返回原始 bbox
+            # First detection, return the original bbox directly
             cx = (bbox[0] + bbox[2]) / 2
             cy = (bbox[1] + bbox[3]) / 2
             w = bbox[2] - bbox[0]
             h = bbox[3] - bbox[1]
             new_smoothed = (cx, cy, w, h)
         else:
-            # 应用指数移动平均
+            # Apply exponential moving average
             cx_old, cy_old, w_old, h_old = smoothed_bbox
             cx_new = (bbox[0] + bbox[2]) / 2
             cy_new = (bbox[1] + bbox[3]) / 2
@@ -132,13 +132,13 @@ class ROIsExtractor:
             
             new_smoothed = (cx, cy, w, h)
         
-        # 更新状态
+        # Update state
         if bbox_type == 'mouth':
             self.smoothed_mouth_bbox = new_smoothed
         else:
             self.smoothed_face_bbox = new_smoothed
         
-        # 转换回 (x_min, y_min, x_max, y_max)
+        # Convert back to (x_min, y_min, x_max, y_max)
         x_min = int(cx - w/2)
         y_min = int(cy - h/2)
         x_max = int(cx + w/2)
@@ -147,16 +147,16 @@ class ROIsExtractor:
         return (x_min, y_min, x_max, y_max)
     
     def _clip_bbox(self, bbox, img_w, img_h):
-        """裁剪 bbox 到图像边界内，并确保有效性"""
+        """Clip bbox to image boundaries and ensure validity"""
         x_min, y_min, x_max, y_max = bbox
         
-        # 裁剪到图像边界
+        # Clip to image boundaries
         x_min = max(0, x_min)
         y_min = max(0, y_min)
         x_max = min(img_w - 1, x_max)
         y_max = min(img_h - 1, y_max)
         
-        # 确保宽高至少为 1
+        # Ensure width and height are at least 1
         if x_max <= x_min:
             x_max = x_min + 1
         if y_max <= y_min:
@@ -165,31 +165,31 @@ class ROIsExtractor:
         return (x_min, y_min, x_max, y_max)
     
     def _crop_and_resize(self, frame, bbox, target_size):
-        """从 frame 裁剪 bbox 区域并调整到 target_size"""
+        """Crop the bbox region from frame and resize it to target_size"""
         x1, y1, x2, y2 = bbox
         
-        # 裁剪 ROI
+        # Crop ROI
         roi = frame[y1:y2, x1:x2]
         
         if roi.size == 0:
-            # 返回黑色图像
+            # Return a black image
             return np.zeros((target_size, target_size, 3), dtype=np.uint8)
         
-        # 调整大小
+        # Resize
         roi_resized = cv2.resize(roi, (target_size, target_size))
         
         return roi_resized
     
     def _random_crop_88(self, roi_96, offset=None):
         """
-        从 96x96 随机裁剪到 88x88（训练用）
+        Randomly crop from 96x96 to 88x88 (for training)
         
         Args:
-            roi_96: 96x96 输入图像
-            offset: 可选的固定偏移量 (top, left)，如果提供则使用该偏移量
+            roi_96: 96x96 input image
+            offset: optional fixed offset (top, left); if provided, use this offset
         
         Returns:
-            88x88 裁剪图像
+            88x88 cropped image
         """
         if offset is not None:
             top, left = offset
@@ -201,7 +201,7 @@ class ROIsExtractor:
         return roi_88
     
     def _center_crop_88(self, roi_96):
-        """从 96x96 中心裁剪到 88x88（验证/测试用）"""
+        """Center crop from 96x96 to 88x88 (for validation/testing)"""
         top = (96 - 88) // 2
         left = (96 - 88) // 2
         roi_88 = roi_96[top:top+88, left:left+88]
@@ -209,22 +209,22 @@ class ROIsExtractor:
     
     def process_video(self, input_video_path, output_dir, mode='train'):
         """
-        处理单个视频文件，生成所有输出
+        Process a single video file and generate all outputs
         
         Args:
-            input_video_path: 输入视频路径
-            output_dir: 输出目录
-            mode: 'train' 或 'eval'（决定 88x88 的裁剪方式）
+            input_video_path: input video path
+            output_dir: output directory
+            mode: 'train' or 'eval' (determines the 88x88 cropping strategy)
         
         Returns:
-            dict: 输出文件路径字典
+            dict: dictionary of output file paths
         """
-        # 创建视频输出目录（以视频名为子目录）
+        # Create a video output directory (use video name as subdirectory)
         video_name = Path(input_video_path).stem
         video_output_dir = Path(output_dir) / video_name
         video_output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 打开输入视频
+        # Open input video
         cap = cv2.VideoCapture(str(input_video_path))
         if not cap.isOpened():
             print(f"Error: Cannot open video {input_video_path}")
@@ -235,7 +235,7 @@ class ROIsExtractor:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        # 初始化输出视频写入器
+        # Initialize output video writers
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         
         outputs = {
@@ -246,12 +246,12 @@ class ROIsExtractor:
             'overlay_debug': cv2.VideoWriter(str(video_output_dir / 'overlay_debug.mp4'), fourcc, fps, (width, height))
         }
         
-        # 重置平滑状态
+        # Reset smoothing state
         self.smoothed_mouth_bbox = None
         self.smoothed_face_bbox = None
         
-        # 如果是 train 模式，为整个视频生成固定的随机 offset
-        # 这样同一个视频的所有帧使用相同的裁剪位置，避免帧间抖动
+        # If in train mode, generate a fixed random offset for the whole video
+        # This ensures all frames in the same video use the same crop position, avoiding frame-to-frame jitter
         if mode == 'train':
             fixed_crop_offset = (
                 np.random.randint(0, 96 - 88 + 1),  # top
@@ -267,7 +267,7 @@ class ROIsExtractor:
             if not ret:
                 break
             
-            # 转换为 RGB 供 MediaPipe 处理
+            # Convert to RGB for MediaPipe processing
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.face_mesh.process(frame_rgb)
             
@@ -277,79 +277,79 @@ class ROIsExtractor:
             if results.multi_face_landmarks:
                 face_landmarks = results.multi_face_landmarks[0]
                 
-                # 获取嘴部 bbox
+                # Get mouth bbox
                 mouth_bbox = self._get_mouth_bbox(face_landmarks, width, height)
                 
-                # 获取全脸 bbox
+                # Get full-face bbox
                 face_bbox = self._get_face_bbox(face_landmarks, width, height)
             
-            # 平滑或回填 mouth bbox
+            # Smooth or fill mouth bbox
             if mouth_bbox is not None:
                 mouth_bbox_smoothed = self._smooth_bbox(mouth_bbox, 'mouth')
             elif self.smoothed_mouth_bbox is not None:
-                # 回填上一帧
+                # Fill with previous frame
                 cx, cy, w, h = self.smoothed_mouth_bbox
                 mouth_bbox_smoothed = (int(cx - w/2), int(cy - h/2), int(cx + w/2), int(cy + h/2))
             else:
-                # 首帧就检测失败，使用默认框（画面中央）
+                # Detection failed on the first frame, use a default box (center of the image)
                 cx, cy = width // 2, height // 2
                 default_size = min(width, height) // 4
                 mouth_bbox_smoothed = (cx - default_size//2, cy - default_size//2, 
                                        cx + default_size//2, cy + default_size//2)
             
-            # 平滑或回填 face bbox
+            # Smooth or fill face bbox
             if face_bbox is not None:
                 face_bbox_smoothed = self._smooth_bbox(face_bbox, 'face')
             elif self.smoothed_face_bbox is not None:
-                # 回填上一帧
+                # Fill with previous frame
                 cx, cy, w, h = self.smoothed_face_bbox
                 face_bbox_smoothed = (int(cx - w/2), int(cy - h/2), int(cx + w/2), int(cy + h/2))
             else:
-                # 首帧就检测失败，使用默认框
+                # Detection failed on the first frame, use a default box
                 cx, cy = width // 2, height // 2
                 default_size = int(min(width, height) * 0.8)
                 face_bbox_smoothed = (cx - default_size//2, cy - default_size//2,
                                       cx + default_size//2, cy + default_size//2)
             
-            # 裁剪到图像边界
+            # Clip to image boundaries
             mouth_bbox_clipped = self._clip_bbox(mouth_bbox_smoothed, width, height)
             face_bbox_clipped = self._clip_bbox(face_bbox_smoothed, width, height)
             
-            # 生成 mouth_96 和 face_96
+            # Generate mouth_96 and face_96
             mouth_96 = self._crop_and_resize(frame, mouth_bbox_clipped, 96)
             face_96 = self._crop_and_resize(frame, face_bbox_clipped, 96)
             
-            # 生成 mouth_88 和 face_88
+            # Generate mouth_88 and face_88
             if mode == 'train':
-                # 使用固定的 offset，确保同一视频所有帧裁剪位置一致
+                # Use a fixed offset to ensure consistent crop position across all frames in the same video
                 mouth_88 = self._random_crop_88(mouth_96, offset=fixed_crop_offset)
                 face_88 = self._random_crop_88(face_96, offset=fixed_crop_offset)
             else:
                 mouth_88 = self._center_crop_88(mouth_96)
                 face_88 = self._center_crop_88(face_96)
             
-            # 写入输出视频
+            # Write output videos
             outputs['mouth_96'].write(mouth_96)
             outputs['face_96'].write(face_96)
             outputs['mouth_88'].write(mouth_88)
             outputs['face_88'].write(face_88)
             
-            # 生成 overlay_debug
+            # Generate overlay_debug
             overlay_frame = frame.copy()
             
-            # 画 mouth bbox（绿色）
+            # Draw mouth bbox (green)
             x1, y1, x2, y2 = mouth_bbox_clipped
             cv2.rectangle(overlay_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(overlay_frame, 'Mouth', (x1, y1 - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
-            # 画 face bbox（蓝色）
+            # Draw face bbox (blue)
             x1, y1, x2, y2 = face_bbox_clipped
             cv2.rectangle(overlay_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
             cv2.putText(overlay_frame, 'Face', (x1, y1 - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
             
-            # 添加帧号和时间戳
+            # Add frame number and timestamp
             time_sec = frame_idx / fps if fps > 0 else 0
             text = f'Frame: {frame_idx} | Time: {time_sec:.2f}s | FPS: {fps}'
             cv2.putText(overlay_frame, text, (10, 30), 
@@ -359,7 +359,7 @@ class ROIsExtractor:
             
             frame_idx += 1
         
-        # 释放资源
+        # Release resources
         cap.release()
         for writer in outputs.values():
             writer.release()
@@ -376,16 +376,16 @@ class ROIsExtractor:
     
     def process_directory(self, input_dir, output_dir, mode='train', pattern='**/*.mp4'):
         """
-        批量处理目录中的所有视频
+        Batch process all videos in a directory
         
         Args:
-            input_dir: 输入目录
-            output_dir: 输出目录
-            mode: 'train' 或 'eval'
-            pattern: 文件匹配模式（默认递归搜索所有 mp4）
+            input_dir: input directory
+            output_dir: output directory
+            mode: 'train' or 'eval'
+            pattern: file matching pattern (default: recursively search all mp4 files)
         
         Returns:
-            list: 所有输出文件路径列表
+            list: list of all output file paths
         """
         input_path = Path(input_dir)
         video_files = list(input_path.glob(pattern))
@@ -403,14 +403,14 @@ class ROIsExtractor:
         return all_outputs
 
 
-# 使用示例
+# Usage example
 if __name__ == '__main__':
     extractor = ROIsExtractor()
     
-    # 处理单个文件
+    # Process a single file
     # outputs = extractor.process_video('path/to/video.mp4', './output', mode='train')
     
-    # 批量处理目录
+    # Batch process a directory
     # all_outputs = extractor.process_directory('path/to/dataset', './output', mode='train')
     
     print("ROI Extractor ready!")
