@@ -8,14 +8,14 @@ from pathlib import Path
 
 def collect_video_paths(root_dir, pattern='**/*.mp4'):
     """
-    收集目录下所有视频文件路径
+    Collect all video file paths under the directory
     
     Args:
-        root_dir: 根目录
-        pattern: 文件匹配模式（默认递归搜索所有 mp4）
+        root_dir: root directory
+        pattern: file matching pattern (default: recursively search all mp4 files)
     
     Returns:
-        list: 视频文件路径列表
+        list: list of video file paths
     """
     video_paths = glob.glob(os.path.join(root_dir, pattern), recursive=True)
     print(f"Found {len(video_paths)} videos in {root_dir}")
@@ -24,17 +24,17 @@ def collect_video_paths(root_dir, pattern='**/*.mp4'):
 
 def validate_outputs(video_name, output_dir, expected_fps, expected_frames, fps_tolerance=1.0):
     """
-    验证输出文件是否正确生成
+    Validate whether the output files are generated correctly
     
     Args:
-        video_name: 视频名称
-        output_dir: 输出目录
-        expected_fps: 期望的帧率
-        expected_frames: 期望的帧数
-        fps_tolerance: fps 允许的误差范围（默认 ±1.0 fps）
+        video_name: video name
+        output_dir: output directory
+        expected_fps: expected frame rate
+        expected_frames: expected frame count
+        fps_tolerance: allowed fps error range (default: ±1.0 fps)
     
     Returns:
-        dict: 验证结果
+        dict: validation results
     """
     video_output_dir = Path(output_dir) / video_name
     
@@ -61,16 +61,16 @@ def validate_outputs(video_name, output_dir, expected_fps, expected_frames, fps_
             results['issues'].append(f"Missing file: {filename}")
             continue
         
-        # 检查视频属性
+        # Check video properties
         cap = cv2.VideoCapture(str(filepath))
         if not cap.isOpened():
             results['issues'].append(f"Cannot open file: {filename}")
             cap.release()
             continue
         
-        # 读取原始 fps（浮点数），避免精度损失
+        # Read original fps (float) to avoid precision loss
         fps_float = cap.get(cv2.CAP_PROP_FPS)
-        fps = int(round(fps_float))  # 四舍五入到整数
+        fps = int(round(fps_float))  # Round to nearest integer
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         
@@ -80,8 +80,8 @@ def validate_outputs(video_name, output_dir, expected_fps, expected_frames, fps_
             'frame_count': frame_count
         }
         
-        # 验证 fps（使用容差比较，避免浮点误差）
-        # 允许 ±fps_tolerance 的误差，或者相对误差 < 1%
+        # Validate fps (use tolerance comparison to avoid floating-point errors)
+        # Allow ±fps_tolerance difference, or relative error < 1%
         fps_diff = abs(fps_float - expected_fps)
         fps_relative_error = fps_diff / expected_fps if expected_fps > 0 else 0
         
@@ -91,7 +91,7 @@ def validate_outputs(video_name, output_dir, expected_fps, expected_frames, fps_
                 f"{filename}: FPS mismatch ({fps_float:.2f} vs {expected_fps}, diff={fps_diff:.2f})"
             )
         
-        # 验证帧数（允许 ±1 的误差，因为某些编码器可能有微小差异）
+        # Validate frame count (allow ±1 difference, since some encoders may have slight variation)
         if abs(frame_count - expected_frames) > 1:
             results['frame_count_match'] = False
             results['issues'].append(
@@ -103,17 +103,17 @@ def validate_outputs(video_name, output_dir, expected_fps, expected_frames, fps_
 
 def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, mode='eval'):
     """
-    在数据集上验证 ROI 提取器
+    Validate the ROI extractor on a dataset
     
     Args:
-        dataset_name: 数据集名称
-        video_paths: 视频路径列表
-        output_dir: 输出目录
-        sample_size: 采样数量
-        mode: 'train' 或 'eval'
+        dataset_name: dataset name
+        video_paths: list of video paths
+        output_dir: output directory
+        sample_size: number of samples
+        mode: 'train' or 'eval'
     
     Returns:
-        dict: 验证指标
+        dict: validation metrics
     """
     if not video_paths:
         print(f"No videos found for {dataset_name}")
@@ -131,7 +131,7 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
         'validation_results': []
     }
     
-    # 随机采样视频进行测试
+    # Randomly sample videos for testing
     if len(video_paths) > sample_size:
         test_videos = np.random.choice(video_paths, sample_size, replace=False)
     else:
@@ -146,7 +146,7 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
         video_name = Path(video_path).stem
         print(f"\n[{video_idx}/{len(test_videos)}] Processing: {video_name}")
         
-        # 获取输入视频属性
+        # Get input video properties
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             print(f"  [ERROR] Cannot open video: {video_path}")
@@ -157,7 +157,7 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
         input_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         
-        # 处理视频
+        # Process video
         try:
             outputs = extractor.process_video(video_path, output_dir, mode=mode)
             if not outputs:
@@ -168,11 +168,11 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
             metrics['processed_videos'] += 1
             metrics['total_frames'] += input_frame_count
             
-            # 验证输出文件
+            # Validate output files
             validation = validate_outputs(video_name, output_dir, input_fps, input_frame_count)
             metrics['validation_results'].append(validation)
             
-            # 打印结果
+            # Print results
             if validation['all_files_exist'] and validation['fps_match'] and validation['frame_count_match']:
                 print(f"  [OK] All outputs validated successfully")
             else:
@@ -184,10 +184,10 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
             print(f"  [ERROR] Exception: {e}")
             metrics['failed_videos'] += 1
     
-    # 计算整体指标
+    # Calculate overall metrics
     metrics['success_rate'] = metrics['processed_videos'] / len(test_videos) if len(test_videos) > 0 else 0
     
-    # 打印总结
+    # Print summary
     print(f"\n{'='*60}")
     print(f"{dataset_name} Validation Summary")
     print(f"{'='*60}")
@@ -197,14 +197,14 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
     print(f"Success rate: {metrics['success_rate']:.2%}")
     print(f"Total frames processed: {metrics['total_frames']}")
     
-    # 统计验证问题
+    # Count validation issues
     all_issues = []
     for result in metrics['validation_results']:
         all_issues.extend(result['issues'])
     
     if all_issues:
         print(f"\nIssues found: {len(all_issues)}")
-        # 显示前 10 个问题
+        # Show the first 10 issues
         for issue in all_issues[:10]:
             print(f"  - {issue}")
         if len(all_issues) > 10:
@@ -215,12 +215,12 @@ def validate_on_dataset(dataset_name, video_paths, output_dir, sample_size=10, m
 
 def quick_preview(output_dir, video_name, num_frames=3):
     """
-    快速预览输出结果
+    Quickly preview the output results
     
     Args:
-        output_dir: 输出目录
-        video_name: 视频名称
-        num_frames: 预览帧数
+        output_dir: output directory
+        video_name: video name
+        num_frames: number of preview frames
     """
     video_output_dir = Path(output_dir) / video_name
     
@@ -228,7 +228,7 @@ def quick_preview(output_dir, video_name, num_frames=3):
     print(f"Quick Preview: {video_name}")
     print(f"{'='*60}")
     
-    # 检查文件是否存在
+    # Check whether files exist
     files = {
         'Mouth 96x96': video_output_dir / 'mouth_96.mp4',
         'Face 96x96': video_output_dir / 'face_96.mp4',
@@ -256,7 +256,7 @@ def quick_preview(output_dir, video_name, num_frames=3):
         print(f"  FPS: {fps}")
         print(f"  Total frames: {frame_count}")
         
-        # 抽取几帧检查
+        # Sample a few frames for checking
         sample_indices = np.linspace(0, frame_count - 1, min(num_frames, frame_count), dtype=int)
         frames_valid = []
         
@@ -271,34 +271,34 @@ def quick_preview(output_dir, video_name, num_frames=3):
 
 
 if __name__ == '__main__':
-    # 配置路径
+    # Configure paths
     grid_root = "./grid_video_path"
     voxceleb_root = "./VoxCeleb_video_path"
     output_dir = "./roi_output"
     
-    # 收集视频路径
+    # Collect video paths
     print("Collecting video paths...")
     grid_videos = collect_video_paths(grid_root, pattern='**/*.mp4')
     voxceleb_videos = collect_video_paths(voxceleb_root, pattern='**/*.mp4')
     
-    # 验证 GRID 数据集
+    # Validate GRID dataset
     if grid_videos:
         grid_metrics = validate_on_dataset(
             "GRID", 
             grid_videos, 
             output_dir, 
-            sample_size=5,  # 先测试少量样本
+            sample_size=5,  # Test a small number of samples first
             mode='eval'
         )
         
-        # 快速预览第一个成功处理的视频
+        # Quickly preview the first successfully processed video
         if grid_metrics and grid_metrics['processed_videos'] > 0:
-            # 找到第一个成功的视频
+            # Find the first successful video
             video_outputs_dir = Path(output_dir)
             first_video_dir = sorted(video_outputs_dir.iterdir())[0]
             quick_preview(output_dir, first_video_dir.name)
     
-    # 验证 VoxCeleb 数据集
+    # Validate VoxCeleb dataset
     if voxceleb_videos:
         voxceleb_metrics = validate_on_dataset(
             "VoxCeleb", 
