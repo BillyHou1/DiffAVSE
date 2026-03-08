@@ -1,3 +1,4 @@
+# Zhenning
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -417,3 +418,4 @@ if __name__ == '__main__':
     print("Usage:")
     print("  extractor.process_video('video.mp4', './output', mode='train')")
     print("  extractor.process_directory('./videos', './output', mode='eval')")
+
