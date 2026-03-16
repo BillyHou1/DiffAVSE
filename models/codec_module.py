@@ -197,15 +197,31 @@ class DepthwiseSeparableConv2d(nn.Module):
     """
     Drop-in replacement for nn.Conv2d using depthwise separable convolution.
     Same interface as nn.Conv2d (in_channels, out_channels, kernel_size, ...).
+    
+    Depthwise separable conv splits a standard conv into:
+    - Depthwise conv: groups=in_channels, applies a separate filter per input channel
+    - Pointwise conv: 1x1 conv to mix channels
+    
+    This reduces params from in*C_out*k_h*k_w to in*k_h*k_w + in*C_out
     """
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
                  padding=0, dilation=1, bias=True):
         super().__init__()
-        # TODO depthwise separable conv, same args as nn.Conv2d
-        raise NotImplementedError
+        # Depthwise conv: each input channel gets its own filter
+        self.depthwise = nn.Conv2d(
+            in_channels, in_channels, kernel_size,
+            stride=stride, padding=padding, dilation=dilation,
+            groups=in_channels, bias=False
+        )
+        # Pointwise conv: 1x1 conv to mix channels
+        self.pointwise = nn.Conv2d(
+            in_channels, out_channels, kernel_size=1, bias=bias
+        )
 
     def forward(self, x):
-        raise NotImplementedError
+        x = self.depthwise(x)
+        x = self.pointwise(x)
+        return x
 
 
 class LiteDenseBlock(nn.Module):
@@ -217,12 +233,28 @@ class LiteDenseBlock(nn.Module):
     def __init__(self, cfg, kernel_size=(3, 3), depth=4):
         super().__init__()
         self.depth = depth
-        # TODO same as DenseBlock but use DepthwiseSeparableConv2d
-        raise NotImplementedError
+        self.dense_block = nn.ModuleList()
+        self.hid_feature = cfg['model_cfg']['hid_feature']
+
+        for i in range(depth):
+            dil = 2 ** i
+            dense_conv = nn.Sequential(
+                DepthwiseSeparableConv2d(
+                    self.hid_feature * (i + 1), self.hid_feature, kernel_size,
+                    dilation=(dil, 1), padding=get_padding_2d(kernel_size, (dil, 1))
+                ),
+                nn.InstanceNorm2d(self.hid_feature, affine=True),
+                nn.PReLU(self.hid_feature)
+            )
+            self.dense_block.append(dense_conv)
 
     def forward(self, x):
         """Same forward logic as DenseBlock."""
-        raise NotImplementedError
+        skip = x
+        for i in range(self.depth):
+            x = self.dense_block[i](skip)
+            skip = torch.cat([x, skip], dim=1)
+        return x
 
 
 class LiteDenseEncoder(nn.Module):
@@ -232,30 +264,80 @@ class LiteDenseEncoder(nn.Module):
     """
     def __init__(self, cfg):
         super().__init__()
-        # TODO copy DenseEncoder, swap DenseBlock for LiteDenseBlock
-        raise NotImplementedError
+        self.cfg = cfg
+        self.input_channel = cfg['model_cfg']['input_channel']
+        self.hid_feature = cfg['model_cfg']['hid_feature']
+
+        self.dense_conv_1 = nn.Sequential(
+            nn.Conv2d(self.input_channel, self.hid_feature, (1, 1)),
+            nn.InstanceNorm2d(self.hid_feature, affine=True),
+            nn.PReLU(self.hid_feature)
+        )
+
+        self.dense_block = LiteDenseBlock(cfg, depth=4)
+
+        self.dense_conv_2 = nn.Sequential(
+            nn.Conv2d(self.hid_feature, self.hid_feature, (1, 3), stride=(1, 2)),
+            nn.InstanceNorm2d(self.hid_feature, affine=True),
+            nn.PReLU(self.hid_feature)
+        )
 
     def forward(self, x):
-        raise NotImplementedError
+        x = self.dense_conv_1(x)  # [batch, hid_feature, time, freq]
+        x = self.dense_block(x)   # [batch, hid_feature, time, freq]
+        x = self.dense_conv_2(x)  # [batch, hid_feature, time, freq//2]
+        return x
 
 
 class LiteMagDecoder(nn.Module):
     """Same as MagDecoder but uses LiteDenseBlock."""
     def __init__(self, cfg):
         super().__init__()
-        # TODO copy MagDecoder, swap DenseBlock for LiteDenseBlock
-        raise NotImplementedError
+        self.dense_block = LiteDenseBlock(cfg, depth=4)
+        self.hid_feature = cfg['model_cfg']['hid_feature']
+        self.output_channel = cfg['model_cfg']['output_channel']
+        self.n_fft = cfg['stft_cfg']['n_fft']
+        self.beta = cfg['model_cfg']['beta']
+
+        self.mask_conv = nn.Sequential(
+            nn.ConvTranspose2d(self.hid_feature, self.hid_feature, (1, 3), stride=(1, 2)),
+            nn.Conv2d(self.hid_feature, self.output_channel, (1, 1)),
+            nn.InstanceNorm2d(self.output_channel, affine=True),
+            nn.PReLU(self.output_channel),
+            nn.Conv2d(self.output_channel, self.output_channel, (1, 1))
+        )
+        self.lsigmoid = LearnableSigmoid2D(self.n_fft // 2 + 1, beta=self.beta)
 
     def forward(self, x):
-        raise NotImplementedError
+        x = self.dense_block(x)
+        x = self.mask_conv(x)
+        x = rearrange(x, 'b c t f -> b f t c').squeeze(-1)
+        x = self.lsigmoid(x)
+        x = rearrange(x, 'b f t -> b t f').unsqueeze(1)
+        return x
 
 
 class LitePhaseDecoder(nn.Module):
     """Same as PhaseDecoder but uses LiteDenseBlock."""
     def __init__(self, cfg):
         super().__init__()
-        # TODO copy PhaseDecoder, swap DenseBlock for LiteDenseBlock
-        raise NotImplementedError
+        self.dense_block = LiteDenseBlock(cfg, depth=4)
+        self.hid_feature = cfg['model_cfg']['hid_feature']
+        self.output_channel = cfg['model_cfg']['output_channel']
+
+        self.phase_conv = nn.Sequential(
+            nn.ConvTranspose2d(self.hid_feature, self.hid_feature, (1, 3), stride=(1, 2)),
+            nn.InstanceNorm2d(self.hid_feature, affine=True),
+            nn.PReLU(self.hid_feature)
+        )
+
+        self.phase_conv_r = nn.Conv2d(self.hid_feature, self.output_channel, (1, 1))
+        self.phase_conv_i = nn.Conv2d(self.hid_feature, self.output_channel, (1, 1))
 
     def forward(self, x):
-        raise NotImplementedError
+        x = self.dense_block(x)
+        x = self.phase_conv(x)
+        x_r = self.phase_conv_r(x)
+        x_i = self.phase_conv_i(x)
+        x = torch.atan2(x_i, x_r)
+        return x
