@@ -80,19 +80,12 @@ def create_dataset(cfg, train=True):
 
 
 def create_dataloader(dataset, cfg, train=True):
-    if cfg['env_setting']['num_gpus'] > 1:
-        sampler = DistributedSampler(dataset)
-        sampler.set_epoch(cfg['training_cfg']['training_epochs'])
-        batch_size = (cfg['training_cfg']['batch_size'] // cfg['env_setting']['num_gpus']) if train else 1
-    else:
-        sampler = None
-        batch_size = cfg['training_cfg']['batch_size'] if train else 1
+    batch_size = cfg['training_cfg']['batch_size'] if train else 1
     num_workers = cfg['env_setting']['num_workers'] if train else 1
     return DataLoader(
         dataset,
         num_workers=num_workers,
-        shuffle=(sampler is None) and train,
-        sampler=sampler,
+        shuffle=train,
         batch_size=batch_size,
         pin_memory=True,
         drop_last=True if train else False
@@ -221,20 +214,18 @@ def train(args, cfg):
             loss_ip, loss_gd, loss_iaf = phase_losses(clean_pha, pha_g, cfg)
             loss_pha = loss_ip + loss_gd + loss_iaf
             loss_com = F.mse_loss(clean_com, com_g) * 2.0
-            _, _, rec_com = mag_phase_stft(
-                audio_g, n_fft, hop_size, win_size, compress_factor, addeps=True
-            )
+            _, _, rec_com = mag_phase_stft(audio_g, n_fft, hop_size, win_size, compress_factor, addeps=True)
             loss_con = F.mse_loss(com_g, rec_com) * 2.0
             loss_sisdr = -si_sdr_loss(clean_audio, audio_g)
             loss_time = F.l1_loss(clean_audio, audio_g)
 
             loss_gen_all = (
                 loss_mag * cfg['training_cfg']['loss']['magnitude'] +
-                loss_pha * cfg["training_cfg"]["loss"]["phase"] +
-                loss_com * cfg["training_cfg"]["loss"]["complex"] +
-                loss_con * cfg["training_cfg"]["loss"]["consistancy"] +
-                loss_sisdr * cfg["training_cfg"]["loss"]["si_sdr"] +
-                loss_time * cfg["training_cfg"]["loss"]["time"]
+                loss_pha * cfg['training_cfg']['loss']['phase'] +
+                loss_com * cfg['training_cfg']['loss']['complex'] +
+                loss_con * cfg['training_cfg']['loss']['consistancy'] +
+                loss_sisdr * cfg['training_cfg']['loss']['si_sdr'] +
+                loss_time * cfg['training_cfg']['loss']['time']
             )
 
             if not check_loss_health(loss_gen_all):
@@ -242,7 +233,7 @@ def train(args, cfg):
                 print(f"Steps {steps}: invalid loss detected, skipping batch.")
                 if consecutive_bad_batches >= nan_patience:
                     print("Reloading latest checkpoint after repeated invalid losses.")
-                    _, _, best_pesq, _ = load_latest_generator_state(
+                    steps, start_epoch, best_pesq, _ = load_latest_generator_state(
                         args.exp_path, device, generator, optim_g, scheduler_g
                     )
                     consecutive_bad_batches = 0
@@ -286,8 +277,8 @@ def train(args, cfg):
                         metrics["com"],
                     )
                 )
-                if metrics["pesq"] >= best_pesq:
-                    best_pesq = metrics["pesq"]
+                if metrics['pesq'] >= best_pesq:
+                    best_pesq = metrics['pesq']
                     save_checkpoint(
                         os.path.join(args.exp_path, f"g_{steps:08d}.pth"),
                         {
@@ -328,24 +319,14 @@ def main():
 
     cfg = load_config(args.config)
     seed = cfg['env_setting']['seed']
-    num_gpus = cfg['env_setting']['num_gpus']
+    #num_gpus = cfg['env_setting']['num_gpus']
     available_gpus = torch.cuda.device_count()
 
     initialize_seed(seed)
     args.exp_path = os.path.join(args.exp_folder, args.exp_name)
     build_env(args.config, 'config.yaml', args.exp_path)
 
-    if torch.cuda.is_available():
-        num_available_gpus = torch.cuda.device_count()
-        print(f"Number of GPUs available: {num_available_gpus}")
-        print_gpu_info(num_available_gpus, cfg)
-    else:
-        warnings.warn("CUDA is not available.", UserWarning)
-
-    if num_gpus > 1:
-        mp.spawn(train, nprocs=num_gpus, args=(args, cfg))
-    else:
-        train(args, cfg)
+    train(args, cfg)
 
 
 if __name__ == "__main__":
