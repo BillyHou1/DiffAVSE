@@ -35,8 +35,37 @@ def enhance_audio(model, noisy_wav, video_path, cfg, device):
     Returns:
         enhanced_wav: 1-D numpy array
     """
-    # TODO
-    raise NotImplementedError
+    # STFT parameters
+    n_fft = cfg['stft_cfg']['n_fft']
+    hop_size = cfg['stft_cfg']['hop_size']
+    win_length = cfg['stft_cfg'].get('win_length', n_fft)
+    
+    # Convert to tensor
+    noisy_wav_tensor = torch.from_numpy(noisy_wav).float().unsqueeze(0).to(device)
+    
+    # Compute STFT
+    noisy_mag, noisy_pha = mag_phase_stft(noisy_wav_tensor, n_fft, hop_size, win_length)
+    
+    # Load video if provided
+    video_tensor = None
+    if video_path is not None and cfg.get('lite_cfg', {}).get('use_visual', False):
+        try:
+            video_frames = load_video_frames(video_path, cfg)
+            video_tensor = torch.from_numpy(video_frames).float().unsqueeze(0).to(device)
+        except Exception as e:
+            print(f"Warning: Failed to load video: {e}")
+    
+    # Run model
+    with torch.no_grad():
+        if video_tensor is not None:
+            enhanced_mag, enhanced_pha = model(noisy_mag, noisy_pha, video_tensor)
+        else:
+            enhanced_mag, enhanced_pha = model(noisy_mag, noisy_pha)
+    
+    # ISTFT
+    enhanced_wav = mag_phase_istft(enhanced_mag, enhanced_pha, n_fft, hop_size, win_length)
+    
+    return enhanced_wav.squeeze(0).cpu().numpy()
 
 
 def plot_spectrogram(ax, wav, sr, n_fft, hop_size, title):
@@ -51,8 +80,28 @@ def plot_spectrogram(ax, wav, sr, n_fft, hop_size, title):
         hop_size: int
         title:    str
     """
-    # TODO magnitude spectrogram in dB, display with librosa or matplotlib
-    raise NotImplementedError
+    # Compute STFT
+    D = librosa.stft(wav, n_fft=n_fft, hop_length=hop_size)
+    mag = np.abs(D)
+    
+    # Convert to dB scale
+    mag_db = librosa.amplitude_to_db(mag, ref=np.max)
+    
+    # Plot
+    img = librosa.display.specshow(
+        mag_db, 
+        sr=sr, 
+        hop_length=hop_size, 
+        x_axis='time', 
+        y_axis='hz',
+        ax=ax,
+        cmap='viridis'
+    )
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Frequency (Hz)')
+    
+    return img
 
 
 def generate_figure(noisy_wav, enhanced_wav, clean_wav, cfg, output_path,
@@ -70,9 +119,56 @@ def generate_figure(noisy_wav, enhanced_wav, clean_wav, cfg, output_path,
 
     Panels: Noisy | Enhanced | Clean | (optional) Difference heatmap
     """
-    # TODO multi-panel figure, call plot_spectrogram for each,
-    # add difference heatmap if show_diff, save to output_path
-    raise NotImplementedError
+    sr = cfg['stft_cfg']['sampling_rate']
+    n_fft = cfg['stft_cfg']['n_fft']
+    hop_size = cfg['stft_cfg']['hop_size']
+    
+    # Determine number of panels
+    n_panels = 4 if show_diff else 3
+    
+    # Create figure
+    fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 4))
+    
+    if n_panels == 1:
+        axes = [axes]
+    
+    # Plot each spectrogram
+    plot_spectrogram(axes[0], noisy_wav, sr, n_fft, hop_size, 'Noisy')
+    plot_spectrogram(axes[1], enhanced_wav, sr, n_fft, hop_size, 'Enhanced')
+    plot_spectrogram(axes[2], clean_wav, sr, n_fft, hop_size, 'Clean')
+    
+    # Difference heatmap
+    if show_diff:
+        # Compute spectrograms
+        D_clean = np.abs(librosa.stft(clean_wav, n_fft=n_fft, hop_length=hop_size))
+        D_enhanced = np.abs(librosa.stft(enhanced_wav, n_fft=n_fft, hop_length=hop_size))
+        
+        # Align lengths
+        min_len = min(D_clean.shape[1], D_enhanced.shape[1])
+        D_clean = D_clean[:, :min_len]
+        D_enhanced = D_enhanced[:, :min_len]
+        
+        # Compute difference in dB
+        diff = D_clean - D_enhanced
+        diff_db = librosa.amplitude_to_db(np.abs(diff) + 1e-10, ref=np.max)
+        
+        # Plot difference
+        img = librosa.display.specshow(
+            diff_db,
+            sr=sr,
+            hop_length=hop_size,
+            x_axis='time',
+            y_axis='hz',
+            ax=axes[3],
+            cmap='RdBu_r'
+        )
+        axes[3].set_title('Difference (Clean - Enhanced)', fontsize=12)
+        axes[3].set_xlabel('Time (s)')
+        axes[3].set_ylabel('Frequency (Hz)')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 
 def main():
