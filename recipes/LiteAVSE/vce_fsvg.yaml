@@ -86,7 +86,7 @@ lite_cfg:
   use_lite_dense: false
   fusion_type: early
   use_unified_gate: true
-  use_cross_modal_vce: false
+  use_cross_modal_vce: true
   audio_dropout_rate: 0.0
   visual_dropout_rate: 0.20
   scout_mode: none
