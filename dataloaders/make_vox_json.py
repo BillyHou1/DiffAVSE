@@ -1,15 +1,12 @@
-# Author: Fan
-# Build JSON lists for VoxCeleb2. Dev split into train/valid, test as-is.
-
+#Author: Fan
+#VoxCeleb2 json lists, split dev into train+valid
 import os
 import random
 import argparse
-from utils import save_json, extract_audio_from_video
-
-
+from dataloaders.av_utils import save_json, extract_audio_ffmpeg as extract_audio_from_video
 
 def collect_clips(vox2_root, subset, extract_audio=False):
-    # subset = 'dev' or 'test'. walk vox2_root/dev or vox2_root/test, get all .mp4
+    #go through dev/ or test/ and grab all the mp4 files
     root = os.path.abspath(vox2_root)
     sub_dir = os.path.join(root, subset)
     if not os.path.isdir(sub_dir):
@@ -26,9 +23,8 @@ def collect_clips(vox2_root, subset, extract_audio=False):
                     out.append({"video": os.path.abspath(full)})
     return out
 
-
 def split_dev(dev_list, val_ratio=0.03, seed=1234):
-    # take val_ratio of dev as valid, rest train. shuffle with seed
+    #shuffle dev and chop off a small chunk for validation
     random.seed(seed)
     lst = list(dev_list)
     random.shuffle(lst)
@@ -39,17 +35,15 @@ def split_dev(dev_list, val_ratio=0.03, seed=1234):
     return train_list, valid_list
 
 def main():
-    parser = argparse.ArgumentParser(description="VoxCeleb2 json lists")
-    parser.add_argument("--vox2_root", required=True, help="VoxCeleb2 root (has dev/ and test/)")
-    parser.add_argument("--output_dir", default="data", help="where to write json")
-    parser.add_argument("--val_ratio", type=float, default=0.03, help="fraction of dev for valid")
-    parser.add_argument("--seed", type=int, default=1234, help="random seed for split")
-    parser.add_argument("--extract_audio", action="store_true", help="extract audio from video")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--vox2_root", required=True)
+    parser.add_argument("--output_dir", default="data")
+    parser.add_argument("--val_ratio", type=float, default=0.03)
+    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--extract_audio", action="store_true")
     args = parser.parse_args()
-
     root = os.path.abspath(args.vox2_root)
     if not os.path.isdir(root):
-        print("Error: not a dir:", root)
         return
 
     dev_list = collect_clips(root, "dev", args.extract_audio)
@@ -61,11 +55,6 @@ def main():
     save_json(train_list, os.path.join(out_dir, "vox_train.json"))
     save_json(valid_list, os.path.join(out_dir, "vox_valid.json"))
     save_json(test_list, os.path.join(out_dir, "vox_test.json"))
-
-    print("train:", len(train_list), "valid:", len(valid_list), "test:", len(test_list))
-    if not dev_list and not test_list:
-        print("no clips.")
-
 
 if __name__ == "__main__":
     main()

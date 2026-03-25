@@ -1,6 +1,4 @@
-# PESQ-guided discriminator, used in original SEMamba training only
-# References: https://github.com/yxlu-0102/MP-SENet/blob/main/models/discriminator.py
-
+#References: https://github.com/yxlu-0102/MP-SENet/blob/main/models/discriminator.py
 import torch
 import torch.nn as nn
 import numpy as np
@@ -12,10 +10,8 @@ def pesq_loss(clean, noisy, sr=16000):
     try:
         pesq_score = pesq(sr, clean, noisy, 'wb')
     except:
-        # error can happen due to silent period
         pesq_score = -1
     return pesq_score
-
 
 def batch_pesq(clean, noisy, cfg):
     num_worker = cfg['env_setting']['num_workers']
@@ -25,7 +21,6 @@ def batch_pesq(clean, noisy, cfg):
         return None
     pesq_score = (pesq_score - 1) / 3.5
     return torch.FloatTensor(pesq_score)
-
 
 class MetricDiscriminator(nn.Module):
     def __init__(self, dim=16, in_channel=2):
@@ -51,7 +46,6 @@ class MetricDiscriminator(nn.Module):
             nn.utils.spectral_norm(nn.Linear(dim*4, 1)),
             LearnableSigmoid1D(1)
         )
-
     def forward(self, x, y):
         xy = torch.stack((x, y), dim=1)
         return self.layers(xy)

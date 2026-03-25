@@ -1,4 +1,4 @@
-# perceptual contrast stretching, not used in our model
+#PCS400
 import os
 import torch
 import torchaudio
@@ -7,7 +7,7 @@ import argparse
 import librosa
 import scipy
 
-# PCS400 parameters
+#PCS400 parameters
 PCS400 = np.ones(201)
 PCS400[0:3] = 1
 PCS400[3:5] = 1.070175439
