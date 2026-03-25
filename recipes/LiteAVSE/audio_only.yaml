@@ -57,7 +57,7 @@ model_cfg:
   expand: 4
   norm_epsilon: 0.00001
   beta: 2.0
-  input_channel: 2
+  input_channel: 3
   output_channel: 1
 
 visual_cfg:

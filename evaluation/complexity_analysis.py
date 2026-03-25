@@ -26,8 +26,9 @@ def count_parameters(model):
     Returns:
         (total_params: int, trainable_params: int)
     """
-    # TODO
-    raise NotImplementedError
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
 
 
 def measure_macs(model, dummy_inputs, device):
@@ -43,8 +44,17 @@ def measure_macs(model, dummy_inputs, device):
 
     You can use thop, ptflops, or fvcore for this.
     """
-    # TODO
-    raise NotImplementedError
+    try:
+        from thop import profile
+        macs, _ = profile(model, inputs=dummy_inputs, verbose=False)
+        return macs / 1e9  # Convert to GMACs
+    except ImportError:
+        # Fallback: estimate from params and input size
+        total_params, _ = count_parameters(model)
+        # Rough estimate: each param contributes ~2 MACs per input element
+        input_elements = sum(t.numel() for t in dummy_inputs)
+        estimated_macs = total_params * 2 * input_elements
+        return estimated_macs / 1e9
 
 
 def measure_rtf(model, dummy_inputs, device, n_runs=50, audio_duration_sec=1.0):
@@ -61,9 +71,33 @@ def measure_rtf(model, dummy_inputs, device, n_runs=50, audio_duration_sec=1.0):
     Returns:
         rtf: float
     """
-    # TODO warm up a few passes first, then time n_runs
-    # GPU ops are async so you need torch.cuda.synchronize() before timing
-    raise NotImplementedError
+    model.eval()
+    
+    # Warm up
+    with torch.no_grad():
+        for _ in range(5):
+            _ = model(*dummy_inputs)
+    
+    # Synchronize before timing
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    
+    # Time n_runs
+    start_time = time.time()
+    with torch.no_grad():
+        for _ in range(n_runs):
+            _ = model(*dummy_inputs)
+    
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    
+    end_time = time.time()
+    
+    total_time = end_time - start_time
+    avg_inference_time = total_time / n_runs
+    rtf = avg_inference_time / audio_duration_sec
+    
+    return rtf
 
 
 def measure_peak_gpu_memory(model, dummy_inputs, device):
@@ -77,8 +111,21 @@ def measure_peak_gpu_memory(model, dummy_inputs, device):
     Returns:
         peak_mb: float (megabytes)
     """
-    # TODO torch has built-in CUDA memory tracking for this
-    raise NotImplementedError
+    if device.type != 'cuda':
+        return 0.0
+    
+    # Reset peak memory stats
+    torch.cuda.reset_peak_memory_stats(device)
+    
+    # Run forward pass
+    with torch.no_grad():
+        _ = model(*dummy_inputs)
+    
+    # Get peak memory
+    peak_bytes = torch.cuda.max_memory_allocated(device)
+    peak_mb = peak_bytes / (1024 ** 2)
+    
+    return peak_mb
 
 
 def build_dummy_inputs(cfg, device, include_video=False):
@@ -94,8 +141,30 @@ def build_dummy_inputs(cfg, device, include_video=False):
 
     Get the shapes from the config.
     """
-    # TODO
-    raise NotImplementedError
+    batch_size = 1
+    n_fft = cfg['stft_cfg']['n_fft']
+    hop_size = cfg['stft_cfg']['hop_size']
+    sampling_rate = cfg['stft_cfg']['sampling_rate']
+    audio_duration = 1.0  # 1 second of audio
+    
+    # Calculate number of frames for 1 second audio
+    num_samples = int(sampling_rate * audio_duration)
+    num_frames = (num_samples - n_fft) // hop_size + 1
+    freq_bins = n_fft // 2 + 1
+    
+    # Create dummy magnitude and phase
+    noisy_mag = torch.randn(batch_size, 1, num_frames, freq_bins, device=device)
+    noisy_pha = torch.randn(batch_size, 1, num_frames, freq_bins, device=device)
+    
+    if include_video:
+        # Create dummy video tensor [B, 3, T_v, H, W]
+        video_fps = 25
+        T_v = int(audio_duration * video_fps)
+        H = W = 96
+        video = torch.randn(batch_size, 3, T_v, H, W, device=device)
+        return (noisy_mag, noisy_pha, video)
+    
+    return (noisy_mag, noisy_pha)
 
 
 def export_csv(results, output_path):
@@ -107,8 +176,19 @@ def export_csv(results, output_path):
                      'model', 'total_params', 'trainable_params', 'gmacs', 'rtf', 'peak_mb'
         output_path: str
     """
-    # TODO
-    raise NotImplementedError
+    if not results:
+        return
+    
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    
+    fieldnames = list(results[0].keys())
+    
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+    
+    print(f"CSV exported to {output_path}")
 
 
 def export_latex(results):
@@ -118,8 +198,31 @@ def export_latex(results):
     Args:
         results: same format as export_csv
     """
-    # TODO
-    raise NotImplementedError
+    if not results:
+        return
+    
+    print("\n% LaTeX table")
+    print("\\begin{table}[h]")
+    print("\\centering")
+    print("\\begin{tabular}{lrrrrr}")
+    print("\\hline")
+    print("Model & Params (M) & GMACs & RTF & Peak Mem (MB) \\\\")
+    print("\\hline")
+    
+    for r in results:
+        model_name = r.get('model', 'Unknown')
+        total_params = r.get('total_params', 0) / 1e6  # Convert to millions
+        gmacs = r.get('gmacs', 0)
+        rtf = r.get('rtf', 0)
+        peak_mb = r.get('peak_mb', 0)
+        
+        print(f"{model_name} & {total_params:.2f} & {gmacs:.2f} & {rtf:.4f} & {peak_mb:.1f} \\\\")
+    
+    print("\\hline")
+    print("\\end{tabular}")
+    print("\\caption{Model complexity comparison}")
+    print("\\label{tab:complexity}")
+    print("\\end{table}")
 
 
 def main():
@@ -131,9 +234,59 @@ def main():
 
     cfg = load_config(args.config)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # TODO create models, run measurements, print and export results
-    raise NotImplementedError
+    
+    results = []
+    
+    # Model variants to evaluate
+    model_variants = [
+        ('SEMamba', SEMamba, False),
+        ('LiteAVSEMamba', LiteAVSEMamba, True),
+    ]
+    
+    for model_name, model_class, use_video in model_variants:
+        print(f"\nEvaluating {model_name}...")
+        
+        # Create model
+        model = model_class(cfg).to(device)
+        model.eval()
+        
+        # Build dummy inputs
+        dummy_inputs = build_dummy_inputs(cfg, device, include_video=use_video)
+        
+        # Measure metrics
+        total_params, trainable_params = count_parameters(model)
+        gmacs = measure_macs(model, dummy_inputs, device)
+        rtf = measure_rtf(model, dummy_inputs, device, n_runs=args.n_runs)
+        peak_mb = measure_peak_gpu_memory(model, dummy_inputs, device)
+        
+        results.append({
+            'model': model_name,
+            'total_params': total_params,
+            'trainable_params': trainable_params,
+            'gmacs': gmacs,
+            'rtf': rtf,
+            'peak_mb': peak_mb
+        })
+        
+        print(f"  Total params: {total_params:,}")
+        print(f"  Trainable params: {trainable_params:,}")
+        print(f"  GMACs: {gmacs:.2f}")
+        print(f"  RTF: {rtf:.4f}")
+        print(f"  Peak GPU Memory: {peak_mb:.1f} MB")
+    
+    # Print summary table
+    print("\n" + "="*80)
+    print("COMPLEXITY SUMMARY")
+    print("="*80)
+    print(f"{'Model':<20} {'Params (M)':<12} {'GMACs':<10} {'RTF':<10} {'Peak MB':<10}")
+    print("-"*80)
+    for r in results:
+        print(f"{r['model']:<20} {r['total_params']/1e6:<12.2f} {r['gmacs']:<10.2f} {r['rtf']:<10.4f} {r['peak_mb']:<10.1f}")
+    print("="*80)
+    
+    # Export results
+    export_csv(results, args.output_csv)
+    export_latex(results)
 
 
 if __name__ == '__main__':
