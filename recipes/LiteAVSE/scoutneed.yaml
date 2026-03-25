@@ -49,7 +49,7 @@ training_cfg:
     si_sdr: 0.1
     aux_visual: 0.5
     alpha_smooth: 0.1
-    alpha_entropy: 0.1
+    alpha_entropy: 0.006
     gate_supervision: 0.0
 
 stft_cfg:
