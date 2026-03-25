@@ -71,7 +71,6 @@ model_cfg:
 
 visual_cfg:
   use_visual: true
-  encoder_type: G
   lipreading_weights: pretrained/lrw_snv1x_tcn2x.pth
   face_size: 96
   video_fps: 25
