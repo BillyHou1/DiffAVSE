@@ -1,7 +1,4 @@
-#LiteAVSEMamba training config
-#early fusion with reliability aware gating on LRS2
-#VCE(temporal)*FSVG(freq)*AudioNeed(amplifier)
-#w=r_vis*r_freq*(1+0.75*r_need)
+#direct fusion, no VCE no FSVG
 env_setting:
   num_gpus: 1
   num_workers: 0
@@ -12,7 +9,7 @@ env_setting:
   summary_interval: 100
   dist_cfg:
     dist_backend: nccl
-    dist_url: tcp://localhost:19633
+    dist_url: tcp://localhost:19634
     world_size: 1
 
 data_cfg:
@@ -49,6 +46,8 @@ training_cfg:
     si_sdr: 0.1
     aux_visual: 0.5
     alpha_smooth: 0.1
+    alpha_entropy: 0.006
+    gate_supervision: 0.0
 
 stft_cfg:
   sampling_rate: 16000
@@ -83,12 +82,10 @@ visual_cfg:
 lite_cfg:
   use_lite_dense: false
   fusion_type: early
-  use_unified_gate: true
-  use_cross_modal_vce: true
+  use_unified_gate: false
+  use_cross_modal_vce: false
   audio_dropout_rate: 0.0
-  visual_dropout_rate: 0.20
-  scout_mode: gate_only
-  scout_frames: 2
-  use_audio_need: true
-  audio_need_warmup: 5000
-  audio_need_alpha: 0.75
+  visual_dropout_rate: 0.0
+  scout_mode: none
+  scout_frames: 0
+  use_audio_need: false

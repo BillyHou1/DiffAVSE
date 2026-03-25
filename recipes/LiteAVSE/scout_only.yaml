@@ -1,4 +1,6 @@
-#VCE+FSVG only, no Scout no AudioNeed
+#VCE+FSVG+Scout, no AudioNeed
+#w=r_vis*r_freq*visual
+
 env_setting:
   num_gpus: 1
   num_workers: 0
@@ -9,7 +11,7 @@ env_setting:
   summary_interval: 100
   dist_cfg:
     dist_backend: nccl
-    dist_url: tcp://localhost:19634
+    dist_url: tcp://localhost:19633
     world_size: 1
 
 data_cfg:
@@ -86,6 +88,6 @@ lite_cfg:
   use_cross_modal_vce: true
   audio_dropout_rate: 0.0
   visual_dropout_rate: 0.20
-  scout_mode: none
-  scout_frames: 0
+  scout_mode: gate_only
+  scout_frames: 2
   use_audio_need: false

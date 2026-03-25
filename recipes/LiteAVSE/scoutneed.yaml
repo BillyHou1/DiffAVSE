@@ -1,5 +1,4 @@
-#ScoutNeed: full reliability-aware system
-#VCE(CrossModal) x FSVG(freq) x AudioNeed(amplifier) x Scout(lookahead)
+#ScoutNeed full config
 #w=r_vis*r_freq*(1+0.75*r_need)
 
 env_setting:

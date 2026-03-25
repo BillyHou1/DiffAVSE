@@ -56,6 +56,7 @@ class LiteAVSEMamba(nn.Module):
         self.visDropRate=liteCfg.get('visual_dropout_rate',0.0)
         self.currentStep=0
         self.useCrossModalVCE=liteCfg.get('use_cross_modal_vce',True)
+        self.useGate=liteCfg.get('use_unified_gate',True)
 
         #audio backbone
         self.dense_encoder=DenseEncoder(cfg)
@@ -153,53 +154,57 @@ class LiteAVSEMamba(nn.Module):
             #scout means lookahead for VCE(no op when scout_mode=none)
             scoutVis=self._scout(visRaw)
 
-            #VCE temporal confidence alpha[B,T,1]
-            visForVCE=scoutVis.permute(0,2,1)
-            audioProj=self.audioEarlyProj(noisy_mag.squeeze(1))
-            if self.useCrossModalVCE:
-                alpha=self.VCE(visForVCE,audioProj)
-            else:
-                alpha=self.VCE(visForVCE)
-
-            if return_intermediates:
-                intermediates['alpha']=alpha.detach()
-                intermediates['visual_raw']=visRaw.detach()
-
-            #gate supervision
-            if self.training and visual_degraded is not None:
-                gateTarget=torch.where(
-                    visual_degraded.bool(),
-                    torch.tensor(0.15,device=alpha.device),
-                    torch.tensor(0.85,device=alpha.device))
-                alphaMean=alpha.mean(dim=1).squeeze(-1)
-                intermediates['gate_loss']=F.binary_cross_entropy(alphaMean,gateTarget)
-
             #project visual for fusion
             visForFusion=scoutVis if self.scoutMode=='full' else visRaw
             visProj=self.visualEarlyProj(visForFusion)
             vis2d=visProj.unsqueeze(-1).expand(-1,-1,-1,Freq)
 
-            #freq wise gate [B,1,T,F]
-            audio2d=audioProj.permute(0,2,1).unsqueeze(-1).expand(-1,-1,-1,Freq)
-            alphaFeat=alpha.permute(0,2,1).unsqueeze(-1).expand(-1,-1,-1,Freq)
-            freqGate=self.FSVG(audio2d,vis2d,alpha=alphaFeat)
+            if self.useGate:
+                #VCE temporal confidence alpha[B,T,1]
+                visForVCE=scoutVis.permute(0,2,1)
+                audioProj=self.audioEarlyProj(noisy_mag.squeeze(1))
+                if self.useCrossModalVCE:
+                    alpha=self.VCE(visForVCE,audioProj)
+                else:
+                    alpha=self.VCE(visForVCE)
 
-            if return_intermediates:
-                intermediates['freq_gate']=freqGate.detach()
-
-            #gating:w=alpha*freqGate(*needAmp)*visual
-            alphaBc=alpha.permute(0,2,1).unsqueeze(-1)
-            if self.useAudioNeed and hasattr(self,'AudioNeed'):
-                step=getattr(self,'currentStep',0)
-                rNeed=self.AudioNeed(noisy_mag,step=step)
-                needAmp=1.0+self.AudioNeedAlpha*rNeed
-                needAmpBc=needAmp.permute(0,2,1).unsqueeze(-1)
-                visGated=alphaBc*freqGate*needAmpBc*vis2d
                 if return_intermediates:
-                    intermediates['r_need']=rNeed.detach()
-                    intermediates['need_amplifier']=needAmp.detach()
+                    intermediates['alpha']=alpha.detach()
+                    intermediates['visual_raw']=visRaw.detach()
+
+                #gate supervision
+                if self.training and visual_degraded is not None:
+                    gateTarget=torch.where(
+                        visual_degraded.bool(),
+                        torch.tensor(0.15,device=alpha.device),
+                        torch.tensor(0.85,device=alpha.device))
+                    alphaMean=alpha.mean(dim=1).squeeze(-1)
+                    intermediates['gate_loss']=F.binary_cross_entropy(alphaMean,gateTarget)
+
+                #freq wise gate [B,1,T,F]
+                audio2d=audioProj.permute(0,2,1).unsqueeze(-1).expand(-1,-1,-1,Freq)
+                alphaFeat=alpha.permute(0,2,1).unsqueeze(-1).expand(-1,-1,-1,Freq)
+                freqGate=self.FSVG(audio2d,vis2d,alpha=alphaFeat)
+
+                if return_intermediates:
+                    intermediates['freq_gate']=freqGate.detach()
+
+                #gating:w=alpha*freqGate(*needAmp)*visual
+                alphaBc=alpha.permute(0,2,1).unsqueeze(-1)
+                if self.useAudioNeed and hasattr(self,'AudioNeed'):
+                    step=getattr(self,'currentStep',0)
+                    rNeed=self.AudioNeed(noisy_mag,step=step)
+                    needAmp=1.0+self.AudioNeedAlpha*rNeed
+                    needAmpBc=needAmp.permute(0,2,1).unsqueeze(-1)
+                    visGated=alphaBc*freqGate*needAmpBc*vis2d
+                    if return_intermediates:
+                        intermediates['r_need']=rNeed.detach()
+                        intermediates['need_amplifier']=needAmp.detach()
+                else:
+                    visGated=alphaBc*freqGate*vis2d
             else:
-                visGated=alphaBc*freqGate*vis2d
+                #direct fusion: no VCE, no FSVG, just project visual
+                visGated=vis2d
 
             #project to 1ch and concat
             visCh=self.visualChannelProj(visGated)

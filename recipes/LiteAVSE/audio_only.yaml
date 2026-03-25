@@ -1,6 +1,4 @@
-#Audio-Only baseline(no visual, SEMamba backbone)
-#for ablation comparison against AV models
-
+#audio only, no visual
 env_setting:
   num_gpus: 1
   num_workers: 0
