@@ -6,7 +6,7 @@
 #
 # 6 losses, 5 active + 1 disabled: mag 0.9 | phase 0.3 | complex 0.1 |
 # consistency 0.1 | SI-SDR 0.3 | time 0.0. You still have to compute
-# loss_time = F.l1_loss(clean_audio, audio_g) even though its weight is 0.0,
+# loss_time = F.l1_loss(clean_audio,    g) even though its weight is 0.0,
 # the config key lookup crashes if you skip it. Complex and consistency are
 # both scaled x2 internally, loss_com = F.mse_loss(...) * 2 etc.
 #
@@ -35,6 +35,7 @@ import torch.multiprocessing as mp
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ExponentialLR
 from torch.nn.utils import clip_grad_norm_
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DistributedSampler, DataLoader
 from dataloaders.dataloader_av import AVDataset
 from models.generator import LiteAVSEMamba
@@ -49,22 +50,12 @@ from utils.util import (
     save_checkpoint,
     scan_checkpoint,
     initialize_process_group,
+    safe_backward,
+    check_loss_health,
 )
 
 torch.backends.cudnn.benchmark = True
 
-
-def check_loss_health(loss):
-    return torch.isfinite(loss).all().item() and (not torch.isnan(loss).any().item())
-
-
-def safe_backward(loss):
-    try:
-        loss.backward()
-        return True
-    except RuntimeError as exc:
-        print(f"Backward failed: {exc}")
-        return False
 
 
 def create_dataset(cfg, train=True):
@@ -79,16 +70,30 @@ def create_dataset(cfg, train=True):
     )
 
 
-def create_dataloader(dataset, cfg, train=True):
+def create_dataloader(dataset, cfg, train=True, rank=0):
     batch_size = cfg['training_cfg']['batch_size'] if train else 1
     num_workers = cfg['env_setting']['num_workers'] if train else 1
+    num_gpus = cfg['env_setting']['num_gpus']
+
+    sampler = None
+    shuffle = train
+    
+    if num_gpus>1:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=num_gpus,
+            rank=rank,
+            shuffle=train
+        )
+        shuffle = False
     return DataLoader(
         dataset,
         num_workers=num_workers,
-        shuffle=train,
+        shuffle=shuffle,
         batch_size=batch_size,
         pin_memory=True,
-        drop_last=True if train else False
+        drop_last=train,
+        sampler = sampler
     )
 
 
@@ -164,13 +169,17 @@ def validate(generator, validation_loader, cfg, device):
     }
 
 
-def train(args, cfg):
+def train(rank, args, cfg):
     if not torch.cuda.is_available():
         raise RuntimeError("LiteAVSE training requires CUDA.")
 
-    device = torch.device('cuda:0')
+    num_gpus=cfg['env_setting']['num_gpus']
     n_fft, hop_size, win_size = cfg['stft_cfg']['n_fft'], cfg['stft_cfg']['hop_size'], cfg['stft_cfg']['win_size']
     compress_factor = cfg['model_cfg']['compress_factor']
+
+    if num_gpus>1:
+        initialize_process_group(cfg,rank)
+    device=torch.device(f'cuda:{rank}')
 
     generator = LiteAVSEMamba(cfg).to(device)
     trainable_params = [p for p in generator.parameters() if p.requires_grad]
@@ -184,8 +193,12 @@ def train(args, cfg):
     steps, start_epoch, best_pesq, _ = load_latest_generator_state(
         args.exp_path, device, generator, optim_g, scheduler_g
     )
+    if num_gpus>1:
+        generator=DistributedDataParallel(generator,device_ids=[rank]).to(device)
 
     train_loader = create_dataloader(create_dataset(cfg, train=True), cfg, train=True)
+    #if rank==0:
+    #    validation_loader = create_dataloader(create_dataset(cfg, train=False), cfg, train=False)
     validation_loader = create_dataloader(create_dataset(cfg, train=False), cfg, train=False)
 
     nan_patience = int(cfg['training_cfg'].get('nan_patience', 3))
@@ -193,11 +206,20 @@ def train(args, cfg):
     generator.train()
 
     for epoch in range(max(0,start_epoch), cfg['training_cfg']['training_epochs']):
-        epoch_start = time.time()
+        if rank==0:
+            epoch_start = time.time()
         print(f"Epoch {epoch + 1}")
         for batch in train_loader:
-            step_start = time.time()
-            clean_audio, clean_mag, clean_pha, clean_com, noisy_mag, noisy_pha, video = batch
+            if rank==0:
+                step_start = time.time()
+            
+            if len(batch)==8:
+                clean_audio, clean_mag, clean_pha, clean_com, noisy_mag, noisy_pha, video, visual_deg = batch
+                visual_deg = visual_deg.to(device, non_blocking=True)
+            else:
+                clean_audio, clean_mag, clean_pha, clean_com, noisy_mag, noisy_pha, video = batch
+                visual_deg = None
+
             clean_audio = clean_audio.to(device, non_blocking=True)
             clean_mag = clean_mag.to(device, non_blocking=True)
             clean_pha = clean_pha.to(device, non_blocking=True)
@@ -206,10 +228,10 @@ def train(args, cfg):
             noisy_pha = noisy_pha.to(device, non_blocking=True)
             video = video.to(device, non_blocking=True)
 
-            optim_g.zero_grad(set_to_none=True)
-            mag_g, pha_g, com_g = generator(noisy_mag, noisy_pha, video)
+            mag_g, pha_g, com_g, intermediates = generator(noisy_mag, noisy_pha, video, return_intermediates=True, visual_degraded=visual_deg)
             audio_g = mag_phase_istft(mag_g, pha_g, n_fft, hop_size, win_size, compress_factor)
 
+            optim_g.zero_grad(set_to_none=True)
             loss_mag = F.mse_loss(clean_mag, mag_g)
             loss_ip, loss_gd, loss_iaf = phase_losses(clean_pha, pha_g, cfg)
             loss_pha = loss_ip + loss_gd + loss_iaf
@@ -227,6 +249,30 @@ def train(args, cfg):
                 loss_sisdr * cfg['training_cfg']['loss']['si_sdr'] +
                 loss_time * cfg['training_cfg']['loss']['time']
             )
+
+            aux_visual=cfg.get('training_cfg',{}).get('loss',{}).get('aux_visual',0.0)
+            if aux_visual>0:
+                loss_aux=intermediates.get('aux_loss',torch.tensor(0.0,device=device))
+                loss_gen_all=loss_gen_all+loss_aux*aux_visual
+
+            alpha_smooth=cfg.get('training_cfg',{}).get('loss',{}).get('alpha_smooth',0.0)
+            if alpha_smooth>0 and 'alpha' in intermediates:
+                alpha=intermediates['alpha']
+                alphaDiff=(alpha[:,1:,:]-alpha[:,:-1,:]).abs()
+                loss_alpha_smooth=alphaDiff.mean()
+                sat_thresh=cfg.get('training_cfg',{}).get('loss',{}).get('alpha_sat_threshold',0.4)
+                alpha_sat=((alpha-0.5).abs()-sat_thresh).clamp(min=0).mean()
+                loss_gen_all=loss_gen_all+(loss_alpha_smooth+alpha_sat*0.5)*alpha_smooth
+
+            alpha_entropy=cfg.get('training_cfg',{}).get('loss',{}).get('alpha_entropy',0.0)
+            if alpha_entropy>0 and 'alpha' in intermediates:
+                a=intermediates['alpha'].clamp(1e-6,1-1e-6)
+                entropy=-(a*a.log()+(1-a)*(1-a).log()).mean()
+                loss_gen_all=loss_gen_all-entropy*alpha_entropy
+
+            gate_supervision =cfg.get('training_cfg',{}).get('loss',{}).get('gate_supervision',0.0)
+            if gate_supervision>0 and 'gate_loss' in intermediates:
+                loss_gen_all=loss_gen_all+intermediates['gate_loss']*gate_supervision
 
             if not check_loss_health(loss_gen_all):
                 consecutive_bad_batches += 1
@@ -247,38 +293,52 @@ def train(args, cfg):
             optim_g.step()
             consecutive_bad_batches = 0
 
-            if steps % cfg['env_setting']['stdout_interval'] == 0:
-                print(
-                    "Steps: {:d}, Loss: {:4.3f}, Mag: {:4.3f}, Pha: {:4.3f}, Com: {:4.3f}, "
-                    "Con: {:4.3f}, SI-SDR: {:4.3f}, Time: {:4.3f}, s/b: {:4.3f}".format(
-                        steps,
-                        loss_gen_all.item(),
-                        loss_mag.item(),
-                        loss_pha.item(),
-                        loss_com.item(),
-                        loss_con.item(),
-                        loss_sisdr.item(),
-                        loss_time.item(),
-                        time.time() - step_start,
+            if rank==0:
+                if steps % cfg['env_setting']['stdout_interval'] == 0:
+                    print(
+                        "Steps: {:d}, Loss: {:4.3f}, Mag: {:4.3f}, Pha: {:4.3f}, Com: {:4.3f}, "
+                        "Con: {:4.3f}, SI-SDR: {:4.3f}, Time: {:4.3f}, s/b: {:4.3f}".format(
+                            steps,
+                            loss_gen_all.item(),
+                            loss_mag.item(),
+                            loss_pha.item(),
+                            loss_com.item(),
+                            loss_con.item(),
+                            loss_sisdr.item(),
+                            loss_time.item(),
+                            time.time() - step_start,
+                        )
                     )
-                )
 
-            if steps % cfg['env_setting']['validation_interval'] == 0 and steps != 0:
-                metrics = validate(generator, validation_loader, cfg, device)
-                print(
-                    "Valid @ {:d}: PESQ {:4.3f}, STOI {:4.3f}, SI-SDR {:4.3f}, Mag {:4.3f}, "
-                    "Pha {:4.3f}, Com {:4.3f}".format(
-                        steps,
-                        metrics["pesq"],
-                        metrics["stoi"],
-                        metrics["si_sdr"],
-                        metrics["mag"],
-                        metrics["pha"],
-                        metrics["com"],
+                if steps % cfg['env_setting']['validation_interval'] == 0 and steps != 0:
+                    metrics = validate(generator, validation_loader, cfg, device)
+                    print(
+                        "Valid @ {:d}: PESQ {:4.3f}, STOI {:4.3f}, SI-SDR {:4.3f}, Mag {:4.3f}, "
+                        "Pha {:4.3f}, Com {:4.3f}".format(
+                            steps,
+                            metrics["pesq"],
+                            metrics["stoi"],
+                            metrics["si_sdr"],
+                            metrics["mag"],
+                            metrics["pha"],
+                            metrics["com"],
+                        )
                     )
-                )
-                if metrics['pesq'] >= best_pesq:
-                    best_pesq = metrics['pesq']
+                    if metrics['pesq'] >= best_pesq:
+                        best_pesq = metrics['pesq']
+                        save_checkpoint(
+                            os.path.join(args.exp_path, f"g_{steps:08d}.pth"),
+                            {
+                                "generator": generator.state_dict(),
+                                "optim_g": optim_g.state_dict(),
+                                "scheduler_g": scheduler_g.state_dict(),
+                                "steps": steps,
+                                "epoch": epoch,
+                                "best_pesq": best_pesq,
+                            },
+                        )
+
+                if steps % cfg['env_setting']['checkpoint_interval'] == 0 and steps != 0:
                     save_checkpoint(
                         os.path.join(args.exp_path, f"g_{steps:08d}.pth"),
                         {
@@ -290,19 +350,6 @@ def train(args, cfg):
                             "best_pesq": best_pesq,
                         },
                     )
-
-            if steps % cfg['env_setting']['checkpoint_interval'] == 0 and steps != 0:
-                save_checkpoint(
-                    os.path.join(args.exp_path, f"g_{steps:08d}.pth"),
-                    {
-                        "generator": generator.state_dict(),
-                        "optim_g": optim_g.state_dict(),
-                        "scheduler_g": scheduler_g.state_dict(),
-                        "steps": steps,
-                        "epoch": epoch,
-                        "best_pesq": best_pesq,
-                    },
-                )
 
             steps += 1
 
@@ -319,14 +366,17 @@ def main():
 
     cfg = load_config(args.config)
     seed = cfg['env_setting']['seed']
-    #num_gpus = cfg['env_setting']['num_gpus']
+    num_gpus = cfg['env_setting']['num_gpus']
     available_gpus = torch.cuda.device_count()
 
     initialize_seed(seed)
     args.exp_path = os.path.join(args.exp_folder, args.exp_name)
     build_env(args.config, 'config.yaml', args.exp_path)
 
-    train(args, cfg)
+    if num_gpus>1:
+        mp.spawn(train,nprocs=num_gpus,args=(args,cfg))
+    else:
+        train(0,args,cfg)
 
 
 if __name__ == "__main__":
