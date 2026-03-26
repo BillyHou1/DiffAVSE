@@ -5,5 +5,5 @@
 University of Bristol  
 Feb 2026
 
-**Team:** Billy, Dominic, Ronny, Fan, Shunjie, Zhenning
+**Team:** Billy, Dominic, Ronny, Fan, Shunjie, Zhenning  
 This is the official implementation of the LiteAVSEMamba-RT paper.
