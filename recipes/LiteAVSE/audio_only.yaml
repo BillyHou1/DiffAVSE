@@ -30,7 +30,7 @@ training_cfg:
   lr_decay: 0.99
   segment_size: 32000
   snr_range: [-10, 10]
-  cocktail_party_prob: 0.0
+  cocktail_party_prob: 0.3
   visual_augmentation: false
   loss:
     magnitude: 0.9
