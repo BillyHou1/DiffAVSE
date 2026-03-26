@@ -6,25 +6,21 @@ import glob
 from torch.distributed import init_process_group
 
 def load_config(config_path):
-    """Load configuration from a YAML file."""
     with open(config_path, 'r') as file:
         return yaml.safe_load(file)
 
 def initialize_seed(seed):
-    """Initialize the random seed for both CPU and GPU."""
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
 def print_gpu_info(num_gpus, cfg):
-    """Print information about available GPUs and batch size per GPU."""
     for i in range(num_gpus):
         gpu_name = torch.cuda.get_device_name(i)
         print(f"GPU {i}: {gpu_name}")
         print('Batch size per GPU:', int(cfg['training_cfg']['batch_size'] / num_gpus))
 
 def initialize_process_group(cfg, rank):
-    """Initialize the process group for distributed training."""
     init_process_group(
         backend=cfg['env_setting']['dist_cfg']['dist_backend'],
         init_method=cfg['env_setting']['dist_cfg']['dist_url'],
@@ -33,7 +29,6 @@ def initialize_process_group(cfg, rank):
     )
 
 def log_model_info(rank, model, exp_path):
-    """Log model information and create necessary directories."""
     print(model)
     num_params = sum(p.numel() for p in model.parameters())
     print("Generator Parameters :", num_params)
@@ -42,7 +37,6 @@ def log_model_info(rank, model, exp_path):
     print("checkpoints directory :", exp_path)
 
 def load_ckpts(args, device):
-    """Load checkpoints if available."""
     if os.path.isdir(args.exp_path):
         cp_g = scan_checkpoint(args.exp_path, 'g_')
         cp_do = scan_checkpoint(args.exp_path, 'do_')
@@ -81,8 +75,79 @@ def build_env(config, config_name, exp_path):
         shutil.copyfile(config, t_path)
 
 def load_optimizer_states(optimizers, state_dict_do):
-    """Load optimizer states from checkpoint."""
     if state_dict_do is not None:
         optim_g, optim_d = optimizers
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
+
+
+#crash protection and training helpers
+def setup_cache_dirs(base=None):
+    if base is None:
+        base=os.path.join(os.path.expanduser("~"),".cache","mp")
+    dirs={
+        "TORCH_HOME":os.path.join(base,"torch"),
+        "TRITON_CACHE_DIR":os.path.join(base,"triton"),
+        "XDG_CACHE_HOME":os.path.join(base,"xdg"),
+        "HF_HOME":os.path.join(base,"huggingface"),
+    }
+    for env_var,path in dirs.items():
+        os.makedirs(path,exist_ok=True)
+        os.environ[env_var]=path
+
+def check_loss_health(loss,nan_count,threshold=5):
+    if torch.isnan(loss).any() or torch.isinf(loss).any():
+        nan_count+=1
+        shouldReload=nan_count>=threshold
+        if shouldReload:
+            print(f"[WARN] {nan_count} consecutive NaN/Inf, reloading checkpoint")
+        else:
+            print(f"[WARN] NaN/Inf loss ({nan_count}/{threshold}), skipping batch")
+        return False,nan_count,shouldReload
+    return True,0,False
+
+def safe_backward(loss,optimizer,max_grad_norm=1.0,model_params=None):
+    try:
+        loss.backward()
+        if model_params is not None:
+            torch.nn.utils.clip_grad_norm_(model_params,max_grad_norm)
+        return True
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print("[WARN] OOM during backward, skipping batch")
+            optimizer.zero_grad()
+            torch.cuda.empty_cache()
+            return False
+        raise
+
+def safe_step(optimizer):
+    try:
+        optimizer.step()
+        return True
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            print("[WARN] OOM during step, skipping batch")
+            optimizer.zero_grad()
+            torch.cuda.empty_cache()
+            return False
+        raise
+
+def save_best_model(exp_path,generator,num_gpus,best_pesq,step):
+    filepath=os.path.join(exp_path,"best_g.pth")
+    state={
+        'generator':(generator.module if num_gpus>1 else generator).state_dict(),
+        'best_pesq':best_pesq,
+        'step':step,
+    }
+    print(f"Saving best model (PESQ={best_pesq:.3f} at step {step}) to {filepath}")
+    torch.save(state,filepath)
+
+def save_checkpoint_with_meta(filepath,obj,best_pesq,best_pesq_step):
+    obj['best_pesq']=best_pesq
+    obj['best_pesq_step']=best_pesq_step
+    save_checkpoint(filepath,obj)
+
+def load_best_pesq_from_ckpt(state_dict_do):
+    if state_dict_do is None:
+        return 0.0,0
+    return state_dict_do.get('best_pesq',0.0),state_dict_do.get('best_pesq_step',0)

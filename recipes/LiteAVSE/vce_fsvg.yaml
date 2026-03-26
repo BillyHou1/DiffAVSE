@@ -1,0 +1,90 @@
+#VCE+FSVG only, no Scout no AudioNeed
+env_setting:
+  num_gpus: 1
+  num_workers: 0
+  seed: 1234
+  stdout_interval: 50
+  checkpoint_interval: 5000
+  validation_interval: 2000
+  summary_interval: 100
+  dist_cfg:
+    dist_backend: nccl
+    dist_url: tcp://localhost:19634
+    world_size: 1
+
+data_cfg:
+  dataset_type: lrs2
+  train_data_json: /user/work/eeme038924/datasets/json_files/lrs2_train.json
+  valid_data_json: /user/work/eeme038924/datasets/json_files/lrs2_valid.json
+  train_noise_json: /user/work/eeme038924/datasets/json_files/noise_all.json
+  valid_noise_json: /user/work/eeme038924/datasets/json_files/noise_demand.json
+  rir_json: /user/work/eeme038924/datasets/json_files/rir_all.json
+  rir_prob: 0.3
+
+training_cfg:
+  training_epochs: 200
+  batch_size: 4
+  learning_rate: 0.0002
+  adam_b1: 0.8
+  adam_b2: 0.99
+  lr_decay: 0.99
+  segment_size: 32000
+  snr_range: [-10, 10]
+  cocktail_party_prob: 0.3
+  visual_augmentation: true
+  visual_degradation_prob: 0.2
+  modality_conflict_prob: 0.15
+  use_differential_lr: true
+  audio_lr_scale: 1.0
+  visual_lr_scale: 0.5
+  loss:
+    magnitude: 0.9
+    phase: 0.3
+    complex: 0.1
+    time: 0.2
+    consistancy: 0.1
+    si_sdr: 0.1
+    aux_visual: 0.5
+    alpha_smooth: 0.1
+    alpha_entropy: 0.006
+    gate_supervision: 0.0
+
+stft_cfg:
+  sampling_rate: 16000
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+
+model_cfg:
+  hid_feature: 64
+  compress_factor: 0.3
+  num_tfmamba: 4
+  d_state: 16
+  d_conv: 4
+  expand: 4
+  norm_epsilon: 0.00001
+  beta: 2.0
+  input_channel: 3
+  output_channel: 1
+
+visual_cfg:
+  use_visual: true
+  lipreading_weights: pretrained/lrw_snv1x_tcn2x.pth
+  face_size: 96
+  video_fps: 25
+  freeze_visual_encoder: true
+  visual_temporal_shift: 2
+  spatial_features: false
+  temporal_head: tcn
+  tcn_bottleneck: 64
+
+lite_cfg:
+  use_lite_dense: false
+  fusion_type: early
+  use_unified_gate: true
+  use_cross_modal_vce: true
+  audio_dropout_rate: 0.0
+  visual_dropout_rate: 0.20
+  scout_mode: none
+  scout_frames: 0
+  use_audio_need: false

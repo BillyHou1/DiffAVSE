@@ -1,4 +1,5 @@
-# original SEMamba training script (audio-only version)
+#original SEMamba training script
+#Audio Enhancement only
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import os

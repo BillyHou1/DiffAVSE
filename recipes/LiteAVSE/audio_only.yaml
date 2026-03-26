@@ -1,0 +1,62 @@
+#audio only, no visual
+env_setting:
+  num_gpus: 1
+  num_workers: 0
+  seed: 1234
+  stdout_interval: 50
+  checkpoint_interval: 5000
+  validation_interval: 2000
+  summary_interval: 100
+  dist_cfg:
+    dist_backend: nccl
+    dist_url: tcp://localhost:19635
+    world_size: 1
+
+data_cfg:
+  dataset_type: lrs2
+  train_data_json: /user/work/eeme038924/datasets/json_files/lrs2_train.json
+  valid_data_json: /user/work/eeme038924/datasets/json_files/lrs2_valid.json
+  train_noise_json: /user/work/eeme038924/datasets/json_files/noise_all.json
+  valid_noise_json: /user/work/eeme038924/datasets/json_files/noise_demand.json
+  rir_json: /user/work/eeme038924/datasets/json_files/rir_all.json
+  rir_prob: 0.3
+
+training_cfg:
+  training_epochs: 200
+  batch_size: 4
+  learning_rate: 0.0002
+  adam_b1: 0.8
+  adam_b2: 0.99
+  lr_decay: 0.99
+  segment_size: 32000
+  snr_range: [-10, 10]
+  cocktail_party_prob: 0.3
+  visual_augmentation: false
+  loss:
+    magnitude: 0.9
+    phase: 0.3
+    complex: 0.1
+    time: 0.2
+    consistancy: 0.1
+    si_sdr: 0.1
+
+stft_cfg:
+  sampling_rate: 16000
+  n_fft: 400
+  hop_size: 100
+  win_size: 400
+
+model_cfg:
+  hid_feature: 64
+  compress_factor: 0.3
+  num_tfmamba: 4
+  d_state: 16
+  d_conv: 4
+  expand: 4
+  norm_epsilon: 0.00001
+  beta: 2.0
+  input_channel: 3
+  output_channel: 1
+
+visual_cfg:
+  use_visual: false

@@ -1,22 +1,13 @@
-# Author: Fan
-# Scan noise directories, merge into one pool, split train/valid (~5% held out).
-
+#Author: Fan
+#find all noise audio files in given folders, mix them into one pool
+#hold out about 5% for validation
 import os
 import random
 import argparse
-from utils import save_json
+from dataloaders.av_utils import save_json
 
-
-def scan_noise_dirs(noise_dirs, extensions=('.wav', '.flac')):
-    """
-    Recursively scan directories for audio files.
-
-    Args:
-        noise_dirs:  list of str, directories to scan
-        extensions:  tuple of str, file extensions to include
-    Returns:
-        list of absolute file paths
-    """
+def scan_noise_dirs(noise_dirs, extensions=('.wav','.flac')):
+    #walk through all the dirs and collect wav/flac paths
     out = []
     for noise_dir in noise_dirs:
         noise_dir = os.path.abspath(noise_dir)
@@ -29,18 +20,8 @@ def scan_noise_dirs(noise_dirs, extensions=('.wav', '.flac')):
                     out.append(full)
     return out
 
-
 def split_noise(file_list, val_ratio=0.05, seed=1234):
-    """
-    Split noise files into train and validation sets.
-
-    Args:
-        file_list: list of str, file paths
-        val_ratio: float, fraction to hold out
-        seed:      int, for reproducibility
-    Returns:
-        (train_list, valid_list)
-    """
+    #shuffle and split off a small validation set
     random.seed(seed)
     random.shuffle(file_list)
     n = len(file_list)
@@ -49,13 +30,10 @@ def split_noise(file_list, val_ratio=0.05, seed=1234):
     train_list = file_list[n_val:]
     return train_list, valid_list
 
-
-
 def main():
-    parser = argparse.ArgumentParser(description='Prepare noise pool from multiple sources')
-    parser.add_argument('--noise_dirs', nargs='+', required=True,
-                        help='directories containing noise audio files')
-    parser.add_argument('--output_dir', default='data', help='output directory for JSON files')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--noise_dirs', nargs='+', required=True)
+    parser.add_argument('--output_dir', default='data')
     args = parser.parse_args()
 
     noise_dirs = args.noise_dirs
@@ -65,7 +43,6 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     save_json(train_list, os.path.join(out_dir, "noise_train.json"))
     save_json(valid_list, os.path.join(out_dir, "noise_valid.json"))
-    print("train:", len(train_list), "valid:", len(valid_list))
 
 if __name__ == '__main__':
     main()
