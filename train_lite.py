@@ -1,43 +1,16 @@
-# Ronny (main loop) + Fan (data loading) + Billy (support)
-# Training script for LiteAVSEMamba, forward pass, loss, backprop, validate,
-# checkpoint.
-#
-# TODO implement the training loop test
-#
-# 6 losses, 5 active + 1 disabled: mag 0.9 | phase 0.3 | complex 0.1 |
-# consistency 0.1 | SI-SDR 0.3 | time 0.0. You still have to compute
-# loss_time = F.l1_loss(clean_audio,    g) even though its weight is 0.0,
-# the config key lookup crashes if you skip it. Complex and consistency are
-# both scaled x2 internally, loss_com = F.mse_loss(...) * 2 etc.
-#
-# Generator-only training with AdamW, no discriminator. Only include params
-# with requires_grad=True cause visual encoder backbone is frozen. Scheduler
-# is ExponentialLR with gamma from config.
-#
-# Validate every N steps, compute PESQ/STOI/SI-SDR on full val set with
-# torch.no_grad. Save best model when PESQ beats previous best.
-# Checkpoints: g_{step:08d}.pth
-#
-# NaN safety: check_loss_health to skip bad batches and reload from last
-# checkpoint after too many consecutive NaNs, safe_backward with try/except
-# around loss.backward(), gradient clipping max_norm=1.0. See utils/util.py.
-#
-# Dataloader returns 7-tuple clean_audio, clean_mag, clean_pha, clean_com,
-# noisy_mag, noisy_pha, video. Move all to GPU with non_blocking=True.
-        
+
 import argparse
 import os
 import time
-import warnings
 import torch
 import torch.nn.functional as F
 import torch.multiprocessing as mp
-from torch.optim import AdamW
+import torch.optim as optim
 from torch.optim.lr_scheduler import ExponentialLR
+from torch.utils.tensorboard import SummaryWriter
 from torch.nn.utils import clip_grad_norm_
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DistributedSampler, DataLoader
-from dataloaders.dataloader_av import AVDataset
 from models.generator import LiteAVSEMamba
 from models.stfts import mag_phase_istft, mag_phase_stft
 from models.loss import phase_losses, pesq_score, si_sdr_loss, si_sdr_score, stoi_score
@@ -56,18 +29,83 @@ from utils.util import (
 
 torch.backends.cudnn.benchmark = True
 
+def setup_optimizer(generator, cfg):
+    #3group differential lr: audio/visual_enc/fusion
+    lr=cfg['training_cfg']['learning_rate']
+    betas=(cfg['training_cfg']['adam_b1'],cfg['training_cfg']['adam_b2'])
+    use_diff_lr=cfg['training_cfg'].get('use_differential_lr',False)
+    if use_diff_lr:
+        audioModules=['dense_encoder','TSMamba','mask_decoder','phase_decoder']
+        visEncModules=['visualEncoder']
+        audio_lr=cfg['training_cfg'].get('audio_lr_scale',1.0)
+        vis_lr=cfg['training_cfg'].get('visual_lr_scale',0.2)
+        audio_params,vis_enc_params,fusion_params=[],[],[]
+        for name,param in generator.named_parameters():
+            if param.requires_grad:
+                if any(name.startswith(m) or name.startswith(f'module.{m}') for m in audioModules):
+                    audio_params.append(param)
+                elif any(name.startswith(m) or name.startswith(f'module.{m}') for m in visEncModules):
+                    vis_enc_params.append(param)
+                else:
+                    fusion_params.append(param)
+        param_groups=[
+            {'params':audio_params,'lr':lr*audio_lr},
+            {'params':vis_enc_params,'lr':lr*vis_lr},
+            {'params':fusion_params,'lr':lr},
+        ]
+        return optim.AdamW(param_groups,betas=betas)
+    else:
+        trainable_params = [p for p in generator.parameters() if p.requires_grad]
+        return optim.AdamW(trainable_params, lr=lr, betas=betas)
 
+def setup_scheduler(optim_g, cfg):
+    lr_decay = cfg['training_cfg']['lr_decay']
+    return ExponentialLR(optim_g, gamma=lr_decay)
 
-def create_dataset(cfg, train=True):
-    data_json = cfg['data_cfg']['train_data_json'] if train else cfg['data_cfg']['valid_data_json']
-    noise_json = cfg['data_cfg']['train_noise_json'] if train else cfg['data_cfg']['valid_noise_json']
-    return AVDataset(
-        data_json=data_json,
-        noise_json=noise_json,
-        cfg=cfg,
-        split=train,
-        visual_augmentation=train,
-    )
+def create_dataset(cfg,train=True,split=True):
+    datasetType=cfg['data_cfg'].get('dataset_type','grid')  
+    if train:
+        dataJson=cfg['data_cfg']['train_data_json']
+        noiseJson=cfg['data_cfg'].get('train_noise_json',None)
+    else:
+        dataJson=cfg['data_cfg']['valid_data_json']
+        noiseJson=cfg['data_cfg'].get('valid_noise_json',None)
+    visCfg=cfg.get('visual_cfg',{})
+    snrRange=cfg['training_cfg'].get('snr_range',[-5,20])
+    rirJson=cfg['data_cfg'].get('rir_json',None) if train else None
+    rirProb=cfg['data_cfg'].get('rir_prob',0.3)
+    common=dict(
+        data_json=dataJson,noise_json=noiseJson,
+        sampling_rate=cfg['stft_cfg']['sampling_rate'],
+        segment_size=cfg['training_cfg']['segment_size'],
+        n_fft=cfg['stft_cfg']['n_fft'],
+        hop_size=cfg['stft_cfg']['hop_size'],
+        win_size=cfg['stft_cfg']['win_size'],
+        compress_factor=cfg['model_cfg']['compress_factor'],
+        snr_range=tuple(snrRange),
+        face_size=visCfg.get('face_size',96),
+        video_fps=visCfg.get('video_fps',25),
+        split=split,shuffle=train,
+        rir_json=rirJson,rir_prob=rirProb)
+
+    if datasetType=='grid':
+        from dataloaders.dataloader_grid import GRIDAVDataset
+        visAug=train and cfg.get('training_cfg',{}).get('visual_augmentation',False)
+        return GRIDAVDataset(visual_augmentation=visAug,**common)
+    elif datasetType=='lrs2':
+        from dataloaders.dataloader_lrs import LRSAVDataset
+        visDegProb=cfg.get('training_cfg',{}).get('visual_degradation_prob',0.0) if train else 0.0
+        modConflict=cfg.get('training_cfg',{}).get('modality_conflict_prob',0.0) if train else 0.0
+        cocktailProb=cfg.get('training_cfg',{}).get('cocktail_party_prob',0.0) if train else 0.0
+        return LRSAVDataset(visual_degradation_prob=visDegProb,
+                            modality_conflict_prob=modConflict,
+                            cocktail_party_prob=cocktailProb,**common)
+    elif datasetType=='vox':
+        from dataloaders.dataloader_vox import VoxCelebAVDataset
+        minAudioLen=cfg['data_cfg'].get('min_audio_len',8000)
+        return VoxCelebAVDataset(min_audio_len=minAudioLen,**common)
+    else:
+        raise ValueError(f"Unknown dataset_type '{datasetType}'")
 
 
 def create_dataloader(dataset, cfg, train=True, rank=0):
@@ -78,14 +116,19 @@ def create_dataloader(dataset, cfg, train=True, rank=0):
     sampler = None
     shuffle = train
     
-    if num_gpus>1:
+    if num_gpus>1 and train:
+        if batch_size < num_gpus:
+            raise ValueError(
+                f"Batch size must be greater than or equal to the number of GPUs")
+        batch_size = batch_size // num_gpus
         sampler = DistributedSampler(
             dataset,
             num_replicas=num_gpus,
             rank=rank,
-            shuffle=train
+            shuffle=train,
         )
         shuffle = False
+
     return DataLoader(
         dataset,
         num_workers=num_workers,
@@ -97,14 +140,17 @@ def create_dataloader(dataset, cfg, train=True, rank=0):
     )
 
 
-def load_latest_generator_state(exp_path, device, generator, optim_g=None, scheduler_g=None):
+def load_latest_generator_state(exp_path, device, generator, cfg, optim_g=None, scheduler_g=None):
+    num_gpus=cfg['env_setting']['num_gpus']
     ckpt_path = scan_checkpoint(exp_path, "g_")
     steps, start_epoch, best_pesq = 0, 0, -1.0
     if ckpt_path is None:
         return steps, start_epoch, best_pesq, ckpt_path
 
     state = load_checkpoint(ckpt_path, device)
-    generator.load_state_dict(state['generator'], strict=False)
+
+    generator.load_state_dict(state["generator"], strict=False)
+
     if optim_g is not None and 'optim_g' in state:
         optim_g.load_state_dict(state['optim_g'])
     if scheduler_g is not None and 'scheduler_g' in state:
@@ -170,9 +216,6 @@ def validate(generator, validation_loader, cfg, device):
 
 
 def train(rank, args, cfg):
-    if not torch.cuda.is_available():
-        raise RuntimeError("LiteAVSE training requires CUDA.")
-
     num_gpus=cfg['env_setting']['num_gpus']
     n_fft, hop_size, win_size = cfg['stft_cfg']['n_fft'], cfg['stft_cfg']['hop_size'], cfg['stft_cfg']['win_size']
     compress_factor = cfg['model_cfg']['compress_factor']
@@ -182,24 +225,23 @@ def train(rank, args, cfg):
     device=torch.device(f'cuda:{rank}')
 
     generator = LiteAVSEMamba(cfg).to(device)
-    trainable_params = [p for p in generator.parameters() if p.requires_grad]
-    optim_g = AdamW(
-        trainable_params,
-        lr=cfg['training_cfg']['learning_rate'],
-        betas=(cfg['training_cfg']['adam_b1'], cfg['training_cfg']['adam_b2']),
-    )
-    scheduler_g = ExponentialLR(optim_g, gamma=cfg['training_cfg']['lr_decay'])
+    optim_g = setup_optimizer(generator, cfg)
+    
+    scheduler_g = setup_scheduler(optim_g, cfg)
 
     steps, start_epoch, best_pesq, _ = load_latest_generator_state(
-        args.exp_path, device, generator, optim_g, scheduler_g
+        args.exp_path, device, generator, cfg, optim_g, scheduler_g
     )
     if num_gpus>1:
         generator=DistributedDataParallel(generator,device_ids=[rank]).to(device)
 
-    train_loader = create_dataloader(create_dataset(cfg, train=True), cfg, train=True)
-    #if rank==0:
-    #    validation_loader = create_dataloader(create_dataset(cfg, train=False), cfg, train=False)
-    validation_loader = create_dataloader(create_dataset(cfg, train=False), cfg, train=False)
+    model_ref = generator.module if num_gpus>1 else generator
+    trainable_params = [p for p in model_ref.parameters() if p.requires_grad]
+
+    train_loader = create_dataloader(create_dataset(cfg, train=True), cfg, train=True, rank=rank)
+    if rank==0:
+        validation_loader = create_dataloader(create_dataset(cfg, train=False), cfg, train=False)
+        sw=SummaryWriter(os.path.join(args.exp_path,'logs'))
 
     nan_patience = int(cfg['training_cfg'].get('nan_patience', 3))
     consecutive_bad_batches = 0
@@ -209,6 +251,8 @@ def train(rank, args, cfg):
         if rank==0:
             epoch_start = time.time()
         print(f"Epoch {epoch + 1}")
+        if num_gpus>1:
+            train_loader.sampler.set_epoch(epoch)
         for batch in train_loader:
             if rank==0:
                 step_start = time.time()
@@ -225,9 +269,10 @@ def train(rank, args, cfg):
             clean_pha = clean_pha.to(device, non_blocking=True)
             clean_com = clean_com.to(device, non_blocking=True)
             noisy_mag = noisy_mag.to(device, non_blocking=True)
-            noisy_pha = noisy_pha.to(device, non_blocking=True)
+            noisy_pha = noisy_pha.to(device, non_blocking=  True)
             video = video.to(device, non_blocking=True)
 
+            model_ref.currentStep = steps
             mag_g, pha_g, com_g, intermediates = generator(noisy_mag, noisy_pha, video, return_intermediates=True, visual_degraded=visual_deg)
             audio_g = mag_phase_istft(mag_g, pha_g, n_fft, hop_size, win_size, compress_factor)
 
@@ -274,18 +319,18 @@ def train(rank, args, cfg):
             if gate_supervision>0 and 'gate_loss' in intermediates:
                 loss_gen_all=loss_gen_all+intermediates['gate_loss']*gate_supervision
 
-            if not check_loss_health(loss_gen_all):
-                consecutive_bad_batches += 1
+            is_valid, consecutive_bad_batches, should_reload = check_loss_health(loss_gen_all, consecutive_bad_batches, nan_patience)
+            if not is_valid:
                 print(f"Steps {steps}: invalid loss detected, skipping batch.")
-                if consecutive_bad_batches >= nan_patience:
+                if should_reload:
                     print("Reloading latest checkpoint after repeated invalid losses.")
                     steps, start_epoch, best_pesq, _ = load_latest_generator_state(
-                        args.exp_path, device, generator, optim_g, scheduler_g
+                        args.exp_path, device, model_ref, cfg, optim_g, scheduler_g
                     )
                     consecutive_bad_batches = 0
                 continue
 
-            if not safe_backward(loss_gen_all):
+            if not safe_backward(loss_gen_all, optim_g):
                 consecutive_bad_batches += 1
                 continue
 
@@ -295,9 +340,26 @@ def train(rank, args, cfg):
 
             if rank==0:
                 if steps % cfg['env_setting']['stdout_interval'] == 0:
+                    gate_info = ""
+                    if 'alpha' in intermediates:
+                        alpha = intermediates['alpha']
+                        gate_info += ", alpha: {:4.3f}+/-{:4.3f}".format(
+                            alpha.mean().item(),
+                            alpha.std().item(),
+                        )
+                    if 'freq_gate' in intermediates:
+                        freq_gate = intermediates['freq_gate']
+                        gate_info += ", fg: {:4.3f}+/-{:4.3f}".format(
+                            freq_gate.mean().item(),
+                            freq_gate.std().item(),
+                        )
+                    if 'gate_loss' in intermediates:
+                        gate_info += ", gate_loss: {:4.3f}".format(
+                            intermediates['gate_loss'].item()
+                        )
                     print(
                         "Steps: {:d}, Loss: {:4.3f}, Mag: {:4.3f}, Pha: {:4.3f}, Com: {:4.3f}, "
-                        "Con: {:4.3f}, SI-SDR: {:4.3f}, Time: {:4.3f}, s/b: {:4.3f}".format(
+                        "Con: {:4.3f}, SI-SDR: {:4.3f}, Time: {:4.3f}, s/b: {:4.3f}{}".format(
                             steps,
                             loss_gen_all.item(),
                             loss_mag.item(),
@@ -307,8 +369,22 @@ def train(rank, args, cfg):
                             loss_sisdr.item(),
                             loss_time.item(),
                             time.time() - step_start,
+                            gate_info,
                         )
                     )
+                
+                if steps % cfg['env_setting']['summary_interval'] == 0 and steps != 0:
+                    sw.add_scalar("Training/Generator Loss",loss_gen_all.item(),steps)
+                    sw.add_scalar("Training/Magnitude Loss",loss_mag.item(),steps)
+                    sw.add_scalar("Training/Phase Loss",loss_pha.item(),steps)
+                    sw.add_scalar("Training/Time Loss",loss_time.item(),steps)
+                    if 'alpha' in intermediates:
+                        sw.add_scalar("Gates/alpha_mean",intermediates['alpha'].mean().item(),steps)
+                        sw.add_scalar("Gates/alpha_std",intermediates['alpha'].std().item(),steps)
+                    if 'freq_gate' in intermediates:
+                        sw.add_scalar("Gates/fsvg_mean",intermediates['freq_gate'].mean().item(),steps)
+                    if 'gate_loss' in intermediates:
+                        sw.add_scalar("Gates/gate_supervision",intermediates['gate_loss'].item(),steps)
 
                 if steps % cfg['env_setting']['validation_interval'] == 0 and steps != 0:
                     metrics = validate(generator, validation_loader, cfg, device)
@@ -326,23 +402,29 @@ def train(rank, args, cfg):
                     )
                     if metrics['pesq'] >= best_pesq:
                         best_pesq = metrics['pesq']
+                        
+                        checkpoint = {
+                            "generator": model_ref.state_dict(),
+                            "optim_g": optim_g.state_dict(),
+                            "scheduler_g": scheduler_g.state_dict(),
+                            "steps": steps,
+                            "epoch": epoch,
+                            "best_pesq": best_pesq,
+                        }
                         save_checkpoint(
                             os.path.join(args.exp_path, f"g_{steps:08d}.pth"),
-                            {
-                                "generator": generator.state_dict(),
-                                "optim_g": optim_g.state_dict(),
-                                "scheduler_g": scheduler_g.state_dict(),
-                                "steps": steps,
-                                "epoch": epoch,
-                                "best_pesq": best_pesq,
-                            },
+                            checkpoint,
+                        )
+                        save_checkpoint(
+                            os.path.join(args.exp_path, "best_g.pth"),
+                            checkpoint,
                         )
 
                 if steps % cfg['env_setting']['checkpoint_interval'] == 0 and steps != 0:
                     save_checkpoint(
                         os.path.join(args.exp_path, f"g_{steps:08d}.pth"),
                         {
-                            "generator": generator.state_dict(),
+                            "generator": model_ref.state_dict(),
                             "optim_g": optim_g.state_dict(),
                             "scheduler_g": scheduler_g.state_dict(),
                             "steps": steps,
@@ -354,14 +436,15 @@ def train(rank, args, cfg):
             steps += 1
 
         scheduler_g.step()
-        print(f"Epoch {epoch + 1} finished in {int(time.time() - epoch_start)} sec.")
+        if rank==0:
+            print(f"Epoch {epoch + 1} finished in {int(time.time() - epoch_start)} sec.")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_folder', default='exp')
-    parser.add_argument('--exp_name', default='LiteAVSE')
-    parser.add_argument('--config', default='recipes/LiteAVSE/LiteAVSE.yaml')
+    parser.add_argument('--exp_name', default=None)
+    parser.add_argument('--config', required=True)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -369,10 +452,19 @@ def main():
     num_gpus = cfg['env_setting']['num_gpus']
     available_gpus = torch.cuda.device_count()
 
+    if args.exp_name is None:
+        args.exp_name = os.path.splitext(os.path.basename(args.config))[0]
+
     initialize_seed(seed)
     args.exp_path = os.path.join(args.exp_folder, args.exp_name)
     build_env(args.config, 'config.yaml', args.exp_path)
 
+    if torch.cuda.is_available():
+        if num_gpus > available_gpus:
+            raise ValueError(f"Not enough GPUs available")
+        print_gpu_info(num_gpus, cfg)
+    else:
+        raise RuntimeError("LiteAVSE training requires CUDA.")
     if num_gpus>1:
         mp.spawn(train,nprocs=num_gpus,args=(args,cfg))
     else:
