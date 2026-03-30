@@ -1,4 +1,5 @@
 #Reference: https://github.com/yxlu-0102/MP-SENet/blob/main/models/generator.py
+import os
 import torch
 import torch.nn as nn
 import numpy as np
@@ -67,8 +68,8 @@ def pesq_score(utts_r, utts_g, cfg):
         except Exception:
             pesq_score = -1
         return pesq_score
-
-    pesq_scores = Parallel(n_jobs=30)(delayed(eval_pesq)(
+    cpu_count = len(os.sched_getaffinity(0))
+    pesq_scores = Parallel(n_jobs=cpu_count)(delayed(eval_pesq)(
         utts_r[i].squeeze().cpu().numpy(),
         utts_g[i].squeeze().cpu().numpy(),
         cfg['stft_cfg']['sampling_rate']
@@ -118,7 +119,7 @@ def si_sdr_score(utts_r, utts_g):
 
 def stoi_score(utts_r, utts_g, cfg):
     sr = cfg['stft_cfg']['sampling_rate']
-
+    cpu_count = len(os.sched_getaffinity(0))
     def eval_stoi(clean_utt, esti_utt, sr):
         try:
             min_len = min(len(clean_utt), len(esti_utt))
@@ -126,7 +127,7 @@ def stoi_score(utts_r, utts_g, cfg):
         except Exception:
             return -1
 
-    stoi_scores = Parallel(n_jobs=30)(delayed(eval_stoi)(
+    stoi_scores = Parallel(n_jobs=cpu_count)(delayed(eval_stoi)(
         utts_r[i].squeeze().cpu().numpy(),
         utts_g[i].squeeze().cpu().numpy(),
         sr

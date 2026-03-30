@@ -27,23 +27,43 @@ def load_video_frames(video_path, start_sec=None, duration_sec=None, face_size=9
         raise RuntimeError(f"cannot open: {video_path}")
 
     src_fps = cap.get(cv2.CAP_PROP_FPS) or fps
+    src_fps = float(src_fps) if src_fps and src_fps > 0 else float(fps)
+    fps = float(fps) if fps and fps > 0 else 25.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    start_frame = int(start_sec * src_fps) if start_sec is not None else 0
-    num_frames = int(duration_sec * fps) if duration_sec is not None else total_frames - start_frame
-    num_frames = max(1, min(num_frames, total_frames - start_frame))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    start_frame = int(round(start_sec * src_fps)) if start_sec is not None else 0
+    start_frame = max(0, min(start_frame, max(0, total_frames - 1)))
+    target_frames = int(duration_sec * fps) if duration_sec is not None else max(1, int((total_frames - start_frame) * fps / src_fps))
+    stride = src_fps / fps
+    target_indices = [
+        min(total_frames - 1, int(round(start_frame + i * stride)))
+        for i in range(target_frames)
+    ]
+
+    if total_frames > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     frames = []
-    for _ in range(num_frames):
+    target_ptr = 0
+    current_idx = start_frame
+    while target_ptr < len(target_indices) and current_idx < total_frames:
         ret, frame = cap.read()
         if not ret:
             break
+        wanted_idx = target_indices[target_ptr]
+        if current_idx != wanted_idx:
+            current_idx += 1
+            continue
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w = frame.shape[:2]
         d = min(h, w)
         frame = frame[(h - d) // 2:(h + d) // 2, (w - d) // 2:(w + d) // 2]
         frame = cv2.resize(frame, (face_size, face_size))
         frames.append(frame)
+        target_ptr += 1
+        while target_ptr < len(target_indices) and target_indices[target_ptr] == current_idx:
+            frames.append(frame.copy())
+            target_ptr += 1
+        current_idx += 1
     cap.release()
 
     if len(frames) == 0:

@@ -40,6 +40,8 @@ class GRIDAVDataset(torch.utils.data.Dataset):
         path = random.choice(self.noise_paths)
         if path not in self.noise_cache:
             data, _ = sf.read(path)
+            if data.ndim > 1:
+                data = data.mean(axis=1)
             self.noise_cache[path] = torch.from_numpy(data).float()
         return self.noise_cache[path]
 

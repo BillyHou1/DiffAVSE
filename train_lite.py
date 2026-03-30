@@ -174,7 +174,10 @@ def validate(generator, validation_loader, cfg, device):
     with torch.no_grad():
         count = 0
         for count, batch in enumerate(validation_loader, start=1):
-            clean_audio, clean_mag, clean_pha, clean_com, noisy_mag, noisy_pha, video = batch
+            if len(batch) == 8:
+                clean_audio, clean_mag, clean_pha, clean_com, noisy_mag, noisy_pha, video, _ = batch
+            else:
+                clean_audio, clean_mag, clean_pha, clean_com, noisy_mag, noisy_pha, video = batch
             clean_audio = clean_audio.to(device, non_blocking=True)
             clean_mag = clean_mag.to(device, non_blocking=True)
             clean_pha = clean_pha.to(device, non_blocking=True)
@@ -283,7 +286,7 @@ def train(rank, args, cfg):
             loss_com = F.mse_loss(clean_com, com_g) * 2.0
             _, _, rec_com = mag_phase_stft(audio_g, n_fft, hop_size, win_size, compress_factor, addeps=True)
             loss_con = F.mse_loss(com_g, rec_com) * 2.0
-            loss_sisdr = -si_sdr_loss(clean_audio, audio_g)
+            loss_sisdr = si_sdr_loss(clean_audio, audio_g)
             loss_time = F.l1_loss(clean_audio, audio_g)
 
             loss_gen_all = (
